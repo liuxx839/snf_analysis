@@ -51,7 +51,42 @@ pip install -r requirements.txt
 
 ---
 
-## 三、使用
+## 三、Web 前端(推荐)
+
+```bash
+bash run_web.sh
+# 然后浏览器打开 http://localhost:8000
+```
+
+前端基于 FastAPI + 原生 HTML/JS(不依赖 Streamlit),有 4 个 Tab:
+
+1. **病人信息 / 预测** — 自动从队列生成表单(数值给出中位数提示,类别给出每个取值的样本数),
+   支持"保存为默认/载入默认/载入示例";预测结果会显示每个亚型的**概率 + 95% 置信区间**(基于 RF 森林方差)
+   和自动生成的中文解读。
+2. **训练配置 / 子人群** — 可以按任意字段过滤**训练集**(比如只用绝经、Grade 2–3、pN0–pN1、Ki67 ≥ 15%...),
+   勾选参与训练的特征,调整 CV 折数 / Bootstrap 次数 / 树数,然后在该子人群上重新训练。
+3. **模型评估 + 原文对比** — 5 折 CV 的 Macro / Per-class AUC + **bootstrap 95% CI**,
+   一张表同时列出你的模型、原文 Transcriptomics RF、原文 Pathology CNN,附 ROC 曲线、
+   混淆矩阵、特征重要性、完整分类报告。
+4. **相似病人** — 可以选择"是否按特征重要性加权欧氏距离"、"是否只在预测亚型内找"。
+
+> 训练/预测都是**会话内**的:你在 Tab ② 训练出的模型会自动用于 Tab ① 的预测和 Tab ④ 的相似度计算,
+> 重启服务会回退到默认全队列模型。
+
+### API 路由
+
+| 路由 | 方法 | 说明 |
+|---|---|---|
+| `/` | GET | 主页 |
+| `/api/meta` | GET | 队列字段范围 / 类别取值分布 |
+| `/api/benchmarks` | GET | 原文 Transcriptomics RF + Pathology CNN AUC |
+| `/api/train` | POST | 选特征+子人群训练, 返回 AUC/CI/ROC/混淆矩阵/特征重要性 |
+| `/api/predict` | POST | 预测一个病人的 SNF 亚型 + 每类概率 CI |
+| `/api/similar` | POST | 找最相似 Top-K 病人 |
+
+---
+
+## 四、命令行使用
 
 ### 1. 复制 / 编辑你自己的病人模板
 
@@ -114,7 +149,7 @@ python3 src/survival_compare.py --patient my_patient.yaml --k 20
 
 ---
 
-## 四、模型说明
+## 五、模型说明
 
 - **算法**:`RandomForest`(800 棵, `class_weight='balanced'`)。原文 transcriptomics 模型也是随机森林。
 - **特征**:7 个数值 + 6 个类别,共 13 列,经过 `ColumnTransformer`:
@@ -138,17 +173,23 @@ python3 src/survival_compare.py --patient my_patient.yaml --k 20
 
 ---
 
-## 五、相似病人
+## 六、相似病人
 
-`find_similar.py` 在 `RandomForest` 预处理后的特征空间里(标准化数值 + One-Hot 类别)
-计算欧氏距离,返回最近的 K 个病人,以及他们的 SNF 标签、PAM50、肿瘤参数和 OS/RFS/DMFS。
-随后 `survival_compare.py` 把这部分人和整个队列做 KM 曲线对比。
+**相似度的定义**:
+1. 把你和队列里每个病人的临床特征一起走**训练时的预处理管道**
+   (数值 → 中位数填补 + z-score 标准化;类别 → 缺失填 `Missing` + One-Hot),
+   得到同一个约 30 维特征空间。
+2. 默认计算**欧氏距离** `d = ||x_me − x_patient||₂`,按 `d` 升序取 Top-K。
+3. Web 前端 / API 支持"**按特征重要性加权**":把每维按 RandomForest 训练出的
+   `feature_importances_` 归一后,乘进距离里,让更能判别 SNF 的维度说了算
+   (比如年龄 / Ki67 / PR% / PAM50 权重大,肿瘤大小权重小)。
+4. 也支持"只在预测出的同亚型内找"(`--same-subtype-only` / 前端勾选框)。
 
-注意:相似 ≠ 同亚型。如果你只想看同亚型内的相似病人,加 `--same-subtype-only`。
+注意:相似 ≠ 同亚型。只按临床相似,返回的 Top-K 里仍可能混着其他亚型,这是正常的。
 
 ---
 
-## 六、文件结构
+## 七、文件结构
 
 ```
 .
@@ -158,20 +199,25 @@ python3 src/survival_compare.py --patient my_patient.yaml --k 20
 ├── 41588_2023_1507_MOESM12_ESM.xlsx
 ├── patient_template.yaml               # 病人信息模板
 ├── requirements.txt
-├── run_all.sh                          # 一键脚本
+├── run_all.sh                          # CLI 一键脚本
+├── run_web.sh                          # 启动 Web 前端
 ├── README.md
 ├── src/
 │   ├── data_loader.py                  # 读 Table S1 + 类型清洗
-│   ├── model.py                        # 训练 + 5 折 CV + 保存模型
-│   ├── predict_patient.py              # 用模型预测一个病人
-│   ├── find_similar.py                 # 找最相似 Top-K 病人
-│   └── survival_compare.py             # KM 生存曲线对比
-└── outputs/                            # 所有结果(自动生成)
+│   ├── training.py                     # 可复用训练/评估(子人群 + bootstrap CI + 森林 CI)
+│   ├── model.py                        # CLI: 训练 + 5 折 CV + 保存模型
+│   ├── predict_patient.py              # CLI: 预测一个病人
+│   ├── find_similar.py                 # CLI: 找最相似 Top-K
+│   └── survival_compare.py             # CLI: KM 生存曲线
+├── web/
+│   ├── app.py                          # FastAPI 后端
+│   └── static/                         # 原生 HTML/CSS/JS 前端
+└── outputs/                            # CLI 产物
 ```
 
 ---
 
-## 七、引用
+## 八、引用
 
 如果用到了原数据,请引用:
 
