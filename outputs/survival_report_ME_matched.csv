@@ -1,0 +1,13 @@
+endpoint,variant,label,n_total,n_events,cv_c_index,train_c_index,test_c_index
+OS,base,Clinical only (baseline),350,69,0.73,0.795,0.75
+OS,treat,+ Adjuvant therapy,350,69,0.724,0.801,0.736
+OS,snf,+ SNF subtype,350,69,0.743,0.814,0.738
+OS,snf+treat,+ SNF + Adjuvant therapy,350,69,0.735,0.825,0.736
+RFS,base,Clinical only (baseline),347,124,0.724,0.776,0.749
+RFS,treat,+ Adjuvant therapy,347,124,0.729,0.787,0.75
+RFS,snf,+ SNF subtype,347,124,0.727,0.784,0.741
+RFS,snf+treat,+ SNF + Adjuvant therapy,347,124,0.731,0.797,0.742
+DMFS,base,Clinical only (baseline),340,114,0.736,0.795,0.709
+DMFS,treat,+ Adjuvant therapy,340,114,0.742,0.814,0.711
+DMFS,snf,+ SNF subtype,340,114,0.749,0.81,0.706
+DMFS,snf+treat,+ SNF + Adjuvant therapy,340,114,0.752,0.822,0.692

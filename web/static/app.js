@@ -734,7 +734,7 @@ document.getElementById("btn-surv-train").addEventListener("click", async () => 
     });
     SURV_LAST_TRAIN = r;
     renderSurvPerf(r);
-    status.textContent = "训练完成, 可以点击「用当前病人预测」。";
+    status.textContent = "训练完成 (Full + Matched 两组), 可以点击「用当前病人预测」。";
   } catch (e) {
     alert("训练失败: " + e.message);
     status.textContent = "";
@@ -743,16 +743,21 @@ document.getElementById("btn-surv-train").addEventListener("click", async () => 
   }
 });
 
-document.getElementById("btn-surv-predict").addEventListener("click", async () => {
+async function survPredict() {
   const patient = collectPatient();
+  const cohort = document.getElementById("surv-cohort").value;
+  const r = await fetchJSON("/api/survival/predict", {
+    method: "POST", headers: {"content-type": "application/json"},
+    body: JSON.stringify({ patient, cohort }),
+  });
+  renderSurvPrediction(r);
+}
+
+document.getElementById("btn-surv-predict").addEventListener("click", async () => {
   const btn = document.getElementById("btn-surv-predict");
   btn.disabled = true; btn.textContent = "预测中...";
   try {
-    const r = await fetchJSON("/api/survival/predict", {
-      method: "POST", headers: {"content-type": "application/json"},
-      body: JSON.stringify({ patient }),
-    });
-    renderSurvPrediction(r);
+    await survPredict();
   } catch (e) {
     alert("预测失败: " + e.message + "\n如果还没训练模型, 请先点击「训练生存模型」。");
   } finally {
@@ -760,45 +765,53 @@ document.getElementById("btn-surv-predict").addEventListener("click", async () =
   }
 });
 
+// 切换 cohort/baseline 时自动重新拉一次或重画
+document.getElementById("surv-cohort").addEventListener("change", async () => {
+  if (!SURV_LAST_PREDICT) return;
+  try { await survPredict(); } catch (e) { /* ignore */ }
+});
+document.getElementById("surv-show-baseline").addEventListener("change", () => {
+  if (SURV_LAST_PREDICT) redrawSurvPrediction(SURV_LAST_PREDICT);
+});
+
 function renderSurvPerf(r) {
   document.getElementById("surv-perf").classList.remove("hidden");
-  const box = document.getElementById("surv-perf-table");
   const vorder = r.variants_order || ["base","treat","snf","snf+treat"];
   const vmeta = r.variants_meta || {};
-  // 表头:端点 × 变体, 每个格里展示 train / test / CV 三个数
-  let html = `<table class="data"><thead><tr>
-    <th rowspan="2">端点</th>`;
-  vorder.forEach(vk => {
-    const m = vmeta[vk] || {};
-    html += `<th colspan="3" style="border-left:2px solid var(--border)">${escapeHTML(m.label || vk)}</th>`;
-  });
-  html += `</tr><tr>`;
-  vorder.forEach(() => {
-    html += `<th style="border-left:2px solid var(--border)">Train C</th><th>Test C</th><th>CV C [95% CI]</th>`;
-  });
-  html += `</tr></thead><tbody>`;
-
-  Object.entries(r.endpoints).forEach(([ep, epData]) => {
-    html += `<tr><td><b>${ep}</b><br><small>${escapeHTML(epData.label||"")}</small></td>`;
+  const cohorts = r.cohorts || {
+    full: { endpoints: r.endpoints, description: "" },
+  };
+  const _renderTable = (cohortData) => {
+    let html = `<table class="data"><thead><tr><th rowspan="2">端点</th>`;
     vorder.forEach(vk => {
-      const v = epData.variants[vk];
-      if (!v || v.error) {
-        html += `<td colspan="3" style="color:#b91c1c;border-left:2px solid var(--border)">ERR</td>`;
-        return;
-      }
-      const ci = `[${v.cv_c_index_ci[0].toFixed(2)}, ${v.cv_c_index_ci[1].toFixed(2)}]`;
-      html += `<td style="border-left:2px solid var(--border)">${v.train_c_index.toFixed(3)}</td>`;
-      html += `<td><b>${v.test_c_index.toFixed(3)}</b><br><small>n=${v.n_total} ev=${v.n_events}</small></td>`;
-      html += `<td>${v.cv_c_index.toFixed(3)}<br><small>${ci}</small></td>`;
+      const m = vmeta[vk] || {};
+      html += `<th colspan="3" style="border-left:2px solid var(--border)">${escapeHTML(m.label || vk)}</th>`;
     });
-    html += `</tr>`;
-  });
-  html += "</tbody></table>";
-  html += `<p class="hint">
-    含 SNF 的两个变体会自动剔除 228 例没有 SNF 标签的病人, 所以 n/events 会小一些 —— 对比 C-index 时请记得这一点。
-    C-index ≈ AUC, 0.5 = 随机, 1.0 = 完美区分风险高低。
-  </p>`;
-  box.innerHTML = html;
+    html += `</tr><tr>`;
+    vorder.forEach(() => {
+      html += `<th style="border-left:2px solid var(--border)">Train C</th><th>Test C</th><th>CV C [95% CI]</th>`;
+    });
+    html += `</tr></thead><tbody>`;
+    Object.entries(cohortData.endpoints || {}).forEach(([ep, epData]) => {
+      html += `<tr><td><b>${ep}</b><br><small>${escapeHTML(epData.label||"")}</small></td>`;
+      vorder.forEach(vk => {
+        const v = epData.variants[vk];
+        if (!v || v.error) {
+          html += `<td colspan="3" style="color:#b91c1c;border-left:2px solid var(--border)">ERR</td>`;
+          return;
+        }
+        const ci = `[${v.cv_c_index_ci[0].toFixed(2)}, ${v.cv_c_index_ci[1].toFixed(2)}]`;
+        html += `<td style="border-left:2px solid var(--border)">${v.train_c_index.toFixed(3)}</td>`;
+        html += `<td><b>${v.test_c_index.toFixed(3)}</b><br><small>n=${v.n_total} ev=${v.n_events}</small></td>`;
+        html += `<td>${v.cv_c_index.toFixed(3)}<br><small>${ci}</small></td>`;
+      });
+      html += `</tr>`;
+    });
+    html += "</tbody></table>";
+    return html;
+  };
+  document.getElementById("surv-perf-table").innerHTML = _renderTable(cohorts.full || {});
+  document.getElementById("surv-perf-matched").innerHTML = _renderTable(cohorts.matched || {endpoints:{}});
 }
 
 function renderSurvPrediction(r) {
@@ -870,9 +883,13 @@ function redrawSurvPrediction(r) {
     renderSurvMilestonesByVariant(r, SURV_SELECTED_VARIANTS);
   } else {
     // 新版:按 SNF 分型对比(默认)
+    const vk = document.getElementById("surv-view-variant").value;
+    const usesSnf = (vk === "snf" || vk === "snf+treat");
     picker.innerHTML = `<span class="hint">
-      把你的病人依次假设成 SNF1/SNF2/SNF3/SNF4 分别跑同一个 Cox 模型, 4 条曲线直接比较"如果我是这个亚型预后会怎样"。
+      把你的病人依次假设成 SNF1/SNF2/SNF3/SNF4 分别跑当前 Cox 模型 (${escapeHTML(vk)}), 4 条曲线直接比较"如果我是这个亚型预后会怎样"。
       虚线 "Expected" = 按 Tab ① 预测的 SNF 概率加权平均。
+      ${usesSnf ? "" : "<br><b>注意</b>:当前模型 <code>"+vk+"</code> 没把 SNF 当特征,4 条曲线必然重合 —— 可作为'加 SNF 之前没分叉'的对照。"}
+      ${document.getElementById("surv-show-baseline").checked ? "<br>灰色虚线 = Baseline(临床特征 only) 模型对你的预测,作为'什么都不加时的参考'。" : ""}
     </span>`;
     picker.onchange = null;
     drawSurvBySubtype(r);
@@ -1004,6 +1021,23 @@ function drawSurvBySubtype(r) {
       ctx.fillText("此变体不支持 SNF 切换", ox + 8, oy + 20);
       return;
     }
+    // 可选: baseline 模型(base 变体)曲线作为灰色虚线参考
+    if (document.getElementById("surv-show-baseline").checked && vk !== "base") {
+      const baseV = r.endpoints[ep].variants["base"];
+      if (baseV && !baseV.error && baseV.prediction) {
+        ctx.strokeStyle = "#9ca3af";
+        ctx.lineWidth = 1.6;
+        ctx.setLineDash([2, 3]);
+        ctx.beginPath();
+        baseV.prediction.times.forEach((t, i) => {
+          const x = ox + Math.min(t, maxT) / maxT * subW;
+          const y = oy + subH - baseV.prediction.survival[i] * subH;
+          if (i === 0) ctx.moveTo(x, y); else ctx.lineTo(x, y);
+        });
+        ctx.stroke();
+        ctx.setLineDash([]);
+      }
+    }
     const bys = v.by_subtype;
     bys.subtype_labels.forEach(s => {
       const pred = bys.per_subtype[s];
@@ -1051,6 +1085,16 @@ function drawSurvBySubtype(r) {
   ctx.setLineDash([]);
   ctx.fillStyle = "#111";
   ctx.fillText("Expected (按概率加权)", lx + 22, ly);
+  lx += ctx.measureText("Expected (按概率加权)").width + 32;
+  // Baseline 图例
+  if (document.getElementById("surv-show-baseline").checked) {
+    ctx.strokeStyle = "#9ca3af"; ctx.lineWidth = 1.6;
+    ctx.setLineDash([2, 3]);
+    ctx.beginPath(); ctx.moveTo(lx, ly - 3); ctx.lineTo(lx + 18, ly - 3); ctx.stroke();
+    ctx.setLineDash([]);
+    ctx.fillStyle = "#111";
+    ctx.fillText("Baseline (临床 only)", lx + 22, ly);
+  }
 }
 
 function drawSurvByVariant(r, selected) {

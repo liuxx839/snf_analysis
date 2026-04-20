@@ -264,12 +264,20 @@ def cox_four_variants(
     penalizer: float = 0.05,
     random_state: int = 42,
     test_size: float = 0.25,
+    restrict_to_snf_labeled: bool = False,
 ) -> Dict[str, dict]:
     """对给定 endpoint 拟合 4 个变体(2x2 = SNF/无 × 治疗/无), 返回它们的 bundle + 结果。
 
-    注意:包含 SNF 的两个变体会自动剔除没有 SNF 标签的样本(训练样本变少),
-    所以同一 endpoint 下 4 个变体的 N/events 不一定相同。
+    restrict_to_snf_labeled=False(默认):
+      base / treat 用全部样本(~578), snf / snf+treat 自动剔除无 SNF 的(~350)
+      —— 这版本反映"在各自最大可用样本上能做到多好"
+
+    restrict_to_snf_labeled=True:
+      4 个变体都强制只用 SNF 标签 cohort (~350)
+      —— 这版本是"matched"对比, n 一致, 加治疗 / 加 SNF 各自的提升才公平可比
     """
+    if restrict_to_snf_labeled:
+        df = df[df["SNF_subtype"].notna()].copy()
     out = {}
     for v in VARIANTS:
         try:
@@ -305,8 +313,8 @@ def predict_per_subtype(
       "subtype_labels": [...]
     }
     """
-    if not bundle.get("with_snf"):
-        raise ValueError("This bundle was trained without SNF; cannot vary subtype.")
+    # 即使 bundle 没把 SNF 当特征,我们也允许把 SNF_subtype 这个键塞进 patient,
+    # 这种情况下模型不会用它,4 条曲线会重合 —— 正好作为"加 SNF 之前没分叉"的对照。
     if subtype_labels is None:
         subtype_labels = ["SNF1", "SNF2", "SNF3", "SNF4"]
 

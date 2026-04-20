@@ -158,7 +158,8 @@ class SurvivalPredictRequest(BaseModel):
     patient: dict
     endpoints: list[str] | None = None     # 若为空则使用已训练的所有端点
     variants: list[str] | None = None      # 若为空则返回全部 4 个变体的预测
-    default_variant: str = "snf+treat"     # 前端默认显示哪一个
+    default_variant: str = "snf+treat"
+    cohort: str = "full"                   # "full" or "matched"
 
 
 def _patient_to_row(patient: dict, features: list[str]) -> pd.DataFrame:
@@ -557,8 +558,11 @@ def similar(req: SimilarRequest):
 # ---------------------------------------------------------------------------
 # 生存预测(CoxPH)
 # ---------------------------------------------------------------------------
-# _surv_state: {endpoint: {variant_key: {"bundle":..., "result":..., "meta":...}}}
-_surv_state: dict = {}
+# _surv_state: {
+#   "full":    {endpoint: {variant_key: {"bundle":..., "result":..., "meta":...}}},
+#   "matched": {...同上, 但只用 SNF 标签 cohort, n 一致...}
+# }
+_surv_state: dict = {"full": {}, "matched": {}}
 
 
 def _variant_entry_to_dict(entry):
@@ -583,32 +587,60 @@ def _variant_entry_to_dict(entry):
 @app.post("/api/survival/train")
 def survival_train(req: SurvivalTrainRequest):
     endpoints = req.endpoints or list(SURV_ENDPOINTS.keys())
-    out = {}
+    out_full = {}
+    out_matched = {}
     for ep in endpoints:
-        variants = cox_four_variants(
+        # full cohort:base/treat 用全部样本, snf 系列自动剔除
+        variants_full = cox_four_variants(
             _feats, endpoint=ep,
             features=req.features,
             n_splits=req.n_splits,
             penalizer=req.penalizer,
             random_state=req.random_state,
         )
-        _surv_state[ep] = variants
-        out[ep] = {
+        # matched cohort:全部 4 个变体都只用 SNF 标签子集, n 一致
+        variants_matched = cox_four_variants(
+            _feats, endpoint=ep,
+            features=req.features,
+            n_splits=req.n_splits,
+            penalizer=req.penalizer,
+            random_state=req.random_state,
+            restrict_to_snf_labeled=True,
+        )
+        _surv_state["full"][ep] = variants_full
+        _surv_state["matched"][ep] = variants_matched
+        out_full[ep] = {
             "label": SURV_ENDPOINTS[ep]["label"],
-            "variants": {k: _variant_entry_to_dict(v) for k, v in variants.items()},
+            "variants": {k: _variant_entry_to_dict(v) for k, v in variants_full.items()},
+        }
+        out_matched[ep] = {
+            "label": SURV_ENDPOINTS[ep]["label"],
+            "variants": {k: _variant_entry_to_dict(v) for k, v in variants_matched.items()},
         }
     return {
         "variants_order": [v["key"] for v in SURV_VARIANTS],
         "variants_meta": {v["key"]: v for v in SURV_VARIANTS},
-        "endpoints": out,
+        "cohorts": {
+            "full": {
+                "description": "Full cohort: base/treat 用全部样本(~578); snf 系列自动剔除无 SNF (~350). 用最大可用样本量评估。",
+                "endpoints": out_full,
+            },
+            "matched": {
+                "description": "Matched cohort: 4 个变体都只用 SNF 标签 cohort (~350), N 一致. 公平对比'加 SNF / 加治疗' 的边际贡献。",
+                "endpoints": out_matched,
+            },
+        },
+        # 兼容老前端字段(等同于 full):
+        "endpoints": out_full,
     }
 
 
 @app.post("/api/survival/predict")
 def survival_predict(req: SurvivalPredictRequest):
-    if not _surv_state:
+    cohort_state = _surv_state.get(req.cohort)
+    if not cohort_state:
         raise HTTPException(400, "尚未训练生存模型, 请先调用 /api/survival/train。")
-    endpoints = req.endpoints or list(_surv_state.keys())
+    endpoints = req.endpoints or list(cohort_state.keys())
     wanted_variants = req.variants or [v["key"] for v in SURV_VARIANTS]
 
     patient = dict(req.patient)
@@ -637,7 +669,7 @@ def survival_predict(req: SurvivalPredictRequest):
 
     out = {}
     for ep in endpoints:
-        vmap = _surv_state.get(ep)
+        vmap = cohort_state.get(ep)
         if vmap is None:
             out[ep] = {"error": "该端点尚未训练"}
             continue
@@ -649,22 +681,23 @@ def survival_predict(req: SurvivalPredictRequest):
                     variant_preds[vk] = {"error": entry["error"], "meta": entry["meta"]}
                 continue
             try:
-                # 含 SNF 的变体额外给出 4 种 SNF 假设下的生存曲线
+                # 所有变体都生成 4 种 SNF 假设曲线;
+                # base/treat 不用 SNF, 4 条会重合 -- 正好作为"加 SNF 之前"的对照。
                 by_subtype = None
-                if entry["bundle"].get("with_snf"):
-                    try:
-                        by_subtype = predict_per_subtype(
-                            entry["bundle"], patient,
-                            subtype_probs=snf_probs,
-                        )
-                    except Exception as ee:
-                        by_subtype = {"error": str(ee)}
+                try:
+                    by_subtype = predict_per_subtype(
+                        entry["bundle"], patient,
+                        subtype_probs=snf_probs,
+                    )
+                except Exception as ee:
+                    by_subtype = {"error": str(ee)}
                 pred = predict_survival_curve(entry["bundle"], patient)
                 res = entry["result"]
                 variant_preds[vk] = {
                     "meta": entry["meta"],
                     "prediction": pred,
                     "by_subtype": by_subtype,
+                    "uses_snf": bool(entry["bundle"].get("with_snf")),
                     "performance": {
                         "cv_c_index": res.cv_c_index,
                         "cv_c_index_ci": list(res.cv_c_index_ci),
@@ -683,6 +716,7 @@ def survival_predict(req: SurvivalPredictRequest):
         }
     return {
         "default_variant": req.default_variant,
+        "cohort": req.cohort,
         "variants_order": [v["key"] for v in SURV_VARIANTS],
         "variants_meta": {v["key"]: v for v in SURV_VARIANTS},
         "auto_predicted_snf": auto_snf,
