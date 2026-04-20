@@ -38,7 +38,40 @@ CATEGORICAL_FEATURES: List[str] = [
     "PAM50",
 ]
 
-ALL_FEATURES = NUMERIC_FEATURES + CATEGORICAL_FEATURES
+# 术后辅助治疗(adjuvant therapy) —— "手术之后额外加上"的治疗:
+#   - Adjuvant_chemotherapy      : 辅助化疗
+#   - Adjuvant_radiotherapy      : 辅助放疗
+#   - Adjuvant_endocrine_therapy : 辅助内分泌治疗(他莫昔芬/AI 等)
+# 这些是"治疗端"变量,而不是"肿瘤本身"的特性; 把它们当特征预测 SNF 时
+# 需要注意:1) 医生在选治疗时可能已经间接知道了肿瘤风险, 会造成轻微的信息泄漏;
+# 2) 对"术前"病人不可用。因此默认放入特征池, 但前端会提供开关让用户按需选入。
+TREATMENT_FEATURES: List[str] = [
+    "Adjuvant_chemotherapy",
+    "Adjuvant_radiotherapy",
+    "Adjuvant_endocrine_therapy",
+]
+
+# 所有可用临床特征 = 核心临床 + 辅助治疗
+ALL_FEATURES = NUMERIC_FEATURES + CATEGORICAL_FEATURES + TREATMENT_FEATURES
+
+FEATURE_DESCRIPTION: dict = {
+    "Age": "年龄(岁)",
+    "Tumor_size_cm": "肿瘤最大径(cm)",
+    "Positive_axillary_lymph_nodes": "阳性腋窝淋巴结数",
+    "ER_percent": "ER 免疫组化阳性比例(0-100%)",
+    "PR_percent": "PR 免疫组化阳性比例(0-100%)",
+    "Ki67": "Ki-67 指数(%)",
+    "HER2_IHC_Status": "HER2 IHC 评分 0/1/2/3",
+    "Menopause": "是否绝经",
+    "Grade": "病理分级 1/2/3",
+    "pT": "术后 T 分期",
+    "pN": "术后 N 分期(淋巴结)",
+    "PR_status": "PR 阳性/阴性",
+    "PAM50": "PAM50 分子分型(LumA/LumB/Her2/Basal/Normal)",
+    "Adjuvant_chemotherapy":     "术后辅助化疗(是/否) —— 治疗端变量, 术前不可用",
+    "Adjuvant_radiotherapy":     "术后辅助放疗(是/否) —— 治疗端变量, 术前不可用",
+    "Adjuvant_endocrine_therapy":"术后辅助内分泌治疗(是/否) —— 治疗端变量, 术前不可用",
+}
 
 SNF_LABELS = ["SNF1", "SNF2", "SNF3", "SNF4"]
 SNF_DESCRIPTION = {
@@ -94,7 +127,7 @@ def build_feature_frame(df_raw: pd.DataFrame) -> pd.DataFrame:
         if col in df.columns:
             df[col] = df[col].map(_to_float)
 
-    for col in CATEGORICAL_FEATURES:
+    for col in CATEGORICAL_FEATURES + TREATMENT_FEATURES:
         if col in df.columns:
             df[col] = df[col].map(_to_str)
 

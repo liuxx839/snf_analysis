@@ -58,17 +58,27 @@ bash run_web.sh
 # 然后浏览器打开 http://localhost:8000
 ```
 
-前端基于 FastAPI + 原生 HTML/JS(不依赖 Streamlit),有 4 个 Tab:
+前端基于 FastAPI + 原生 HTML/JS(不依赖 Streamlit),有 5 个 Tab:
 
 1. **病人信息 / 预测** — 自动从队列生成表单(数值给出中位数提示,类别给出每个取值的样本数),
-   支持"保存为默认/载入默认/载入示例";预测结果会显示每个亚型的**概率 + 95% 置信区间**(基于 RF 森林方差)
-   和自动生成的中文解读。
-2. **训练配置 / 子人群** — 可以按任意字段过滤**训练集**(比如只用绝经、Grade 2–3、pN0–pN1、Ki67 ≥ 15%...),
-   勾选参与训练的特征,调整 CV 折数 / Bootstrap 次数 / 树数,然后在该子人群上重新训练。
-3. **模型评估 + 原文对比** — 5 折 CV 的 Macro / Per-class AUC + **bootstrap 95% CI**,
-   一张表同时列出你的模型、原文 Transcriptomics RF、原文 Pathology CNN,附 ROC 曲线、
-   混淆矩阵、特征重要性、完整分类报告。
-4. **相似病人** — 可以选择"是否按特征重要性加权欧氏距离"、"是否只在预测亚型内找"。
+   支持"保存为默认 / 载入默认 / 载入示例";预测结果显示每个亚型的**概率 + 95% 置信区间**
+   和自动生成的中文解读。对 RF/ExtraTrees 这类 bagging 模型,CI 用"树级方差"给出;
+   其它模型退化为点估计。
+2. **训练配置 / 子人群** — 可以按任意字段过滤**训练集**(比如只用绝经、Grade 2–3、pN0–pN1、Ki67 ≥ 15% ...),
+   勾选参与训练的特征,**选择算法**(16 个之一),调整 CV 折数 / Bootstrap 次数 / 树数,
+   然后在该子人群上重新训练。
+3. **模型大比拼** — 一次性同时训练 **16 种主流算法**(RandomForest / ExtraTrees / GradientBoosting /
+   HistGradientBoosting / XGBoost / LightGBM / LogisticRegression / LogReg-L1 / LinearSVM / RBF-SVM /
+   KNN / DecisionTree / GaussianNB / LDA / QDA / MLP),按 Macro AUC 排名,还会画出每个模型的柱状图 +
+   bootstrap 95% CI 误差线,并把原文 Transcriptomics RF / Pathology CNN 作为参考线叠加。
+   可选"**自动采用最佳模型**",这样 Tab ①④ 的预测/相似病人都会换成表现最好的算法。
+4. **模型评估 + 原文对比** — 上一次训练模型的详情:Macro / Per-class AUC + bootstrap 95% CI、
+   ROC、混淆矩阵、特征重要性、完整分类报告,一张表对比原文 Transcriptomics RF 和 Pathology CNN。
+5. **相似病人** — 可以选择"是否按特征重要性加权欧氏距离"、"是否只在预测亚型内找"。
+
+> **注:辅助治疗三字段** (`Adjuvant_chemotherapy` / `Adjuvant_radiotherapy` / `Adjuvant_endocrine_therapy`)
+> 是"治疗端"变量,不是肿瘤本身的特性。对术前病人无法获得,并可能间接泄露医生看报告后做出的决策,
+> 所以默认**不参与训练**,表单里有特殊标记;勾选后视作术后病人的额外信息。
 
 > 训练/预测都是**会话内**的:你在 Tab ② 训练出的模型会自动用于 Tab ① 的预测和 Tab ④ 的相似度计算,
 > 重启服务会回退到默认全队列模型。
@@ -80,7 +90,8 @@ bash run_web.sh
 | `/` | GET | 主页 |
 | `/api/meta` | GET | 队列字段范围 / 类别取值分布 |
 | `/api/benchmarks` | GET | 原文 Transcriptomics RF + Pathology CNN AUC |
-| `/api/train` | POST | 选特征+子人群训练, 返回 AUC/CI/ROC/混淆矩阵/特征重要性 |
+| `/api/train` | POST | 选特征+子人群+算法训练, 返回 AUC/CI/ROC/混淆矩阵/特征重要性 |
+| `/api/compare` | POST | 一次性比较多个模型, 返回排行榜, 可选择自动采用最佳 |
 | `/api/predict` | POST | 预测一个病人的 SNF 亚型 + 每类概率 CI |
 | `/api/similar` | POST | 找最相似 Top-K 病人 |
 

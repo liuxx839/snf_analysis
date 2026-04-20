@@ -28,6 +28,8 @@ from data_loader import (  # noqa: E402
     ALL_FEATURES,
     CATEGORICAL_FEATURES,
     NUMERIC_FEATURES,
+    TREATMENT_FEATURES,
+    FEATURE_DESCRIPTION,
     SNF_DESCRIPTION,
     SNF_LABELS,
     build_feature_frame,
@@ -36,11 +38,14 @@ from data_loader import (  # noqa: E402
     split_labeled_unlabeled,
 )
 from training import (  # noqa: E402
+    MODEL_ZOO,
     PAPER_BENCHMARKS,
     apply_subpopulation,
     build_pipeline,
+    compare_models,
     compute_similarity,
     cross_validate_with_ci,
+    list_available_models,
     predict_with_ci,
 )
 
@@ -75,13 +80,21 @@ _state: dict = {
 }
 
 
+_DEFAULT_FEATURES = NUMERIC_FEATURES + CATEGORICAL_FEATURES  # 默认不含辅助治疗
+
+
 def _default_train_if_needed():
     if _state["pipeline"] is None:
-        X, y = get_modeling_matrix(_labeled, ALL_FEATURES)
+        X, y = get_modeling_matrix(_labeled, _DEFAULT_FEATURES)
         pipe = build_pipeline(NUMERIC_FEATURES, CATEGORICAL_FEATURES,
-                              n_estimators=500, random_state=42)
+                              n_estimators=500, random_state=42,
+                              model_name="RandomForest")
         pipe.fit(X, y)
         _state["pipeline"] = pipe
+        _state["features"] = _DEFAULT_FEATURES
+        _state["numeric"] = list(NUMERIC_FEATURES)
+        _state["categorical"] = list(CATEGORICAL_FEATURES)
+        _state["model_name"] = "RandomForest"
         _state["train_df"] = _labeled.copy()
 
 
@@ -95,6 +108,18 @@ class TrainRequest(BaseModel):
     n_boot: int = 400
     n_estimators: int = 500
     random_state: int = 42
+    model_name: str = "RandomForest"
+
+
+class CompareRequest(BaseModel):
+    features: list[str] | None = None
+    filters: dict | None = None
+    model_names: list[str] | None = None
+    n_splits: int = 5
+    n_boot: int = 200
+    n_estimators: int = 300
+    random_state: int = 42
+    auto_select: bool = True
 
 
 class PredictRequest(BaseModel):
@@ -114,7 +139,7 @@ def _patient_to_row(patient: dict, features: list[str]) -> pd.DataFrame:
     for c in NUMERIC_FEATURES:
         if c in df.columns:
             df[c] = pd.to_numeric(df[c], errors="coerce")
-    for c in CATEGORICAL_FEATURES:
+    for c in CATEGORICAL_FEATURES + TREATMENT_FEATURES:
         if c in df.columns:
             df[c] = df[c].astype("object").where(df[c].notna(), None)
             df[c] = df[c].apply(lambda v: None if v is None or str(v).strip() == "" else str(v))
@@ -137,7 +162,7 @@ def meta():
             "median": float(np.nanmedian(s)) if s.notna().any() else None,
             "missing_pct": float(s.isna().mean() * 100),
         }
-    for c in CATEGORICAL_FEATURES:
+    for c in CATEGORICAL_FEATURES + TREATMENT_FEATURES:
         vc = labeled[c].astype(str).replace({"nan": None}).dropna().value_counts()
         meta_cols[c] = {
             "type": "categorical",
@@ -153,10 +178,13 @@ def meta():
         "features": ALL_FEATURES,
         "numeric_features": NUMERIC_FEATURES,
         "categorical_features": CATEGORICAL_FEATURES,
+        "treatment_features": TREATMENT_FEATURES,
+        "feature_description": FEATURE_DESCRIPTION,
         "labels": SNF_LABELS,
         "label_description": SNF_DESCRIPTION,
         "columns": meta_cols,
         "subtype_distribution": {k: int(v) for k, v in sub_dist.items()},
+        "available_models": list_available_models(),
     }
 
 
@@ -188,7 +216,10 @@ def train(req: TrainRequest):
     if not features:
         raise HTTPException(400, "features 为空")
     numeric = [c for c in features if c in NUMERIC_FEATURES]
-    categorical = [c for c in features if c in CATEGORICAL_FEATURES]
+    categorical = [c for c in features if c not in NUMERIC_FEATURES]
+
+    if req.model_name not in MODEL_ZOO:
+        raise HTTPException(400, f"未知模型 {req.model_name}")
 
     df_sub = apply_subpopulation(_labeled, req.filters or {})
     if len(df_sub) < 20:
@@ -203,13 +234,15 @@ def train(req: TrainRequest):
             random_state=req.random_state,
             n_boot=req.n_boot,
             n_estimators=req.n_estimators,
+            model_name=req.model_name,
         )
     except ValueError as e:
         raise HTTPException(400, str(e))
 
     pipe = build_pipeline(numeric, categorical,
                           n_estimators=req.n_estimators,
-                          random_state=req.random_state)
+                          random_state=req.random_state,
+                          model_name=req.model_name)
     pipe.fit(X, y)
 
     _state["pipeline"] = pipe
@@ -220,13 +253,26 @@ def train(req: TrainRequest):
     _state["filters"] = req.filters or {}
     _state["train_df"] = df_sub.copy()
     _state["cv"] = cv
+    _state["model_name"] = req.model_name
 
     try:
         names = pipe.named_steps["preproc"].get_feature_names_out().tolist()
     except Exception:
-        names = [f"f{i}" for i in range(len(pipe.named_steps["clf"].feature_importances_))]
-    importances = pipe.named_steps["clf"].feature_importances_.tolist()
-    top = sorted(zip(names, importances), key=lambda x: -x[1])[:15]
+        names = None
+    clf = pipe.named_steps["clf"]
+    imp_values = None
+    if hasattr(clf, "feature_importances_"):
+        try: imp_values = clf.feature_importances_.tolist()
+        except Exception: imp_values = None
+    elif hasattr(clf, "coef_"):
+        try:
+            coef = clf.coef_
+            imp_values = np.abs(coef).mean(axis=0).tolist() if coef.ndim == 2 else np.abs(coef).tolist()
+        except Exception: imp_values = None
+    if imp_values is None or names is None:
+        top = []
+    else:
+        top = sorted(zip(names, imp_values), key=lambda x: -x[1])[:15]
 
     roc_points = {}
     from sklearn.metrics import roc_curve
@@ -248,6 +294,7 @@ def train(req: TrainRequest):
         "labels": cv.labels,
         "features_used": features,
         "filters_applied": _state["filters"],
+        "model_name": req.model_name,
         "macro_auc": cv.macro_auc,
         "macro_auc_ci": list(cv.macro_auc_ci),
         "per_class_auc": cv.per_class_auc,
@@ -258,6 +305,75 @@ def train(req: TrainRequest):
         "feature_importance_top15": [{"name": n, "importance": float(v)} for n, v in top],
         "roc_points": roc_points,
         "paper_benchmarks": benchmarks_overlay,
+    }
+
+
+# ---------------------------------------------------------------------------
+# /api/compare : 同时比较多个模型
+# ---------------------------------------------------------------------------
+@app.post("/api/compare")
+def compare(req: CompareRequest):
+    features = req.features or ALL_FEATURES
+    features = [f for f in features if f in ALL_FEATURES]
+    if not features:
+        raise HTTPException(400, "features 为空")
+    numeric = [c for c in features if c in NUMERIC_FEATURES]
+    categorical = [c for c in features if c not in NUMERIC_FEATURES]
+
+    df_sub = apply_subpopulation(_labeled, req.filters or {})
+    if len(df_sub) < 20:
+        raise HTTPException(400, f"子人群样本过少 (N={len(df_sub)}),请放宽筛选条件。")
+
+    X, y = get_modeling_matrix(df_sub, features)
+
+    results = compare_models(
+        X, y, numeric, categorical,
+        model_names=req.model_names,
+        n_splits=req.n_splits,
+        random_state=req.random_state,
+        n_boot=req.n_boot,
+        n_estimators=req.n_estimators,
+    )
+
+    best_name = None
+    auto_selected = False
+    if req.auto_select:
+        ok = [r for r in results if r["fit_ok"]]
+        if ok:
+            best_name = ok[0]["name"]
+            best_cv = cross_validate_with_ci(
+                X, y, numeric, categorical,
+                n_splits=req.n_splits, random_state=req.random_state,
+                n_boot=req.n_boot, n_estimators=req.n_estimators,
+                model_name=best_name,
+            )
+            pipe = build_pipeline(numeric, categorical,
+                                  n_estimators=req.n_estimators,
+                                  random_state=req.random_state,
+                                  model_name=best_name)
+            pipe.fit(X, y)
+            _state["pipeline"] = pipe
+            _state["numeric"] = numeric
+            _state["categorical"] = categorical
+            _state["features"] = features
+            _state["labels"] = best_cv.labels
+            _state["filters"] = req.filters or {}
+            _state["train_df"] = df_sub.copy()
+            _state["cv"] = best_cv
+            _state["model_name"] = best_name
+            auto_selected = True
+
+    return {
+        "n_samples": int(len(y)),
+        "features_used": features,
+        "filters_applied": req.filters or {},
+        "results": results,
+        "best_model": best_name,
+        "auto_selected_as_current": auto_selected,
+        "paper_benchmarks": {
+            name: {c: PAPER_BENCHMARKS[name].get(c) for c in SNF_LABELS}
+            for name in PAPER_BENCHMARKS
+        },
     }
 
 
@@ -318,6 +434,7 @@ def predict(req: PredictRequest):
         "subtype_description": {c: SNF_DESCRIPTION.get(c, "") for c in labels},
         "features_used": features,
         "filters_applied": _state.get("filters", {}),
+        "model_name": _state.get("model_name", "RandomForest"),
         "model_performance": model_perf,
     }
 
