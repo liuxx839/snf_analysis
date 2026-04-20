@@ -75,10 +75,14 @@ bash run_web.sh
 4. **模型评估 + 原文对比** — 上一次训练模型的详情:Macro / Per-class AUC + bootstrap 95% CI、
    ROC、混淆矩阵、特征重要性、完整分类报告,一张表对比原文 Transcriptomics RF 和 Pathology CNN。
 5. **相似病人** — 可以选择"是否按特征重要性加权欧氏距离"、"是否只在预测亚型内找"。
-6. **生存预测** — 用 Cox 比例风险模型分别为 **OS / RFS / DMFS** 拟合,报告训练/测试/5 折 CV 的
-   **C-index**(带 95% CI),并给你的个人 **生存曲线** + 2/5/10 年的生存概率 + partial hazard ratio。
-   默认**包含辅助治疗三字段**(因为"上没上化疗 / 放疗 / 内分泌治疗"对生存影响很直接),
-   可取消勾选"包含辅助治疗字段"再重新训练。
+6. **生存预测** — 为 **OS / RFS / DMFS** 各训 **4 个 Cox 变体**(2×2 = 是否含 SNF × 是否含辅助治疗):
+   - `base` 基线(只有临床)
+   - `+ Adjuvant therapy`
+   - `+ SNF subtype`(用 Tab ① 模型自动预测的 SNF)
+   - `+ SNF + Adjuvant therapy`(信息最全,默认显示)
+
+   每个组合都报告 **Train / Test / 5 折 CV C-index**(带 95% CI),并给个人生存曲线 +
+   2/5/10 年生存概率 + partial hazard ratio。可以直观看到"知道 SNF 分型或治疗史,生存预测能好多少"。
 
 > **注:辅助治疗三字段** (`Adjuvant_chemotherapy` / `Adjuvant_radiotherapy` / `Adjuvant_endocrine_therapy`)
 > 是"治疗端"变量:手术后医生根据肿瘤风险决定的化疗/放疗/内分泌治疗。
@@ -210,7 +214,8 @@ python3 src/survival_compare.py --patient my_patient.yaml --k 20
 - **特征**:7 个数值 + 6 个类别,共 13 列,经过 `ColumnTransformer`:
   - 数值:中位数填补 + 标准化
   - 类别:常数填补 + One-Hot
-- **评估**:分层 5 折交叉验证, one-vs-rest AUC(原文也是这种报告方式)。
+- **评估**:分层 5 折交叉验证, one-vs-rest AUC, 同时报告 **Weighted AUC**(按类别样本数加权, 推荐主用)和 **Macro AUC**(每类等权)。
+  类别不平衡时(SNF3 = 118, SNF4 = 58)weighted 更贴合整体实际表现。
 
 在仓库默认数据上跑出来的指标(随机种子 42):
 

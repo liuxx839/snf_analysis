@@ -147,31 +147,47 @@
   <!-- ===================== Tab 6: 生存预测 ===================== -->
   <section id="tab-survival" class="tab-panel">
     <div class="card">
-      <h2>个人生存曲线预测(Cox 比例风险模型)</h2>
+      <h2>个人生存预测(Cox)· SNF 与 治疗 的 2×2 对比</h2>
       <p class="hint">
-        用 Tab ① 的病人信息,分别为 <b>OS(总生存)</b>、<b>RFS(无复发生存)</b>、<b>DMFS(无远处转移生存)</b> 拟合一个 Cox 模型,
-        并给出你的个人生存曲线 + 24/60/120 个月的生存概率 + 模型在独立测试集上的 C-index。
+        为 <b>OS / RFS / DMFS</b> 分别训练 <b>4 个变体</b>(2×2):基线 / 加治疗 / 加 SNF / 加 SNF+治疗,
+        放在一起可以直接看到"知道 SNF 分型或用治疗信息,生存预测能不能更准"。
+        默认展示的是 <b>+ SNF + Adjuvant therapy</b> 那一条(信息量最全)。
       </p>
       <div class="row">
-        <label><input type="checkbox" id="surv-treatment" checked> <b>包含辅助治疗字段</b>(术后病人默认勾选)</label>
         <label>CV 折数 <input id="surv-splits" type="number" value="5" min="2" max="10" /></label>
         <label>L2 惩罚 <input id="surv-pen" type="number" step="0.01" value="0.05" min="0" max="1" /></label>
       </div>
       <div class="actions">
-        <button id="btn-surv-train" class="primary">训练生存模型(OS + RFS + DMFS)</button>
+        <button id="btn-surv-train" class="primary">训练 4 变体(OS+RFS+DMFS = 12 个模型)</button>
         <button id="btn-surv-predict" class="ghost">用当前病人预测</button>
         <span id="surv-status" class="stat"></span>
       </div>
 
       <div id="surv-perf" class="hidden">
-        <h3>Test/CV 报告</h3>
-        <div id="surv-perf-table"></div>
+        <h3>变体 × 端点性能对比(Train / Test / CV C-index)</h3>
+        <div id="surv-perf-table" class="table-scroll"></div>
       </div>
 
       <div id="surv-plot-wrap" class="hidden">
-        <h3>个人生存曲线</h3>
+        <h3>你的个人生存曲线</h3>
+        <div class="row">
+          <label>视图:
+            <select id="surv-view-mode">
+              <option value="bysubtype" selected>按 SNF 分型对比(SNF1/2/3/4 各一条)</option>
+              <option value="byvariant">按变体对比(base/treat/snf/snf+treat)</option>
+            </select>
+          </label>
+          <label>使用哪个 Cox 模型:
+            <select id="surv-view-variant">
+              <option value="snf+treat" selected>+ SNF + Adjuvant therapy</option>
+              <option value="snf">+ SNF subtype (no treatment)</option>
+            </select>
+          </label>
+          <span id="surv-snf-prob" class="stat"></span>
+        </div>
+        <div class="row" id="surv-variant-picker"></div>
         <div class="canvas-wrap">
-          <canvas id="surv-canvas" width="700" height="430"></canvas>
+          <canvas id="surv-canvas" width="900" height="440"></canvas>
         </div>
         <div id="surv-milestones"></div>
         <div id="surv-coef" class="hint"></div>

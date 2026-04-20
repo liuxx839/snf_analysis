@@ -399,7 +399,10 @@ class CVResult:
     per_class_auc_ci: Dict[str, Tuple[float, float]] = field(default_factory=dict)
     macro_auc: float = float("nan")
     macro_auc_ci: Tuple[float, float] = (float("nan"), float("nan"))
+    weighted_auc: float = float("nan")
+    weighted_auc_ci: Tuple[float, float] = (float("nan"), float("nan"))
     fold_macro_auc: List[float] = field(default_factory=list)
+    fold_weighted_auc: List[float] = field(default_factory=list)
     classification_report: str = ""
     confusion_matrix: List[List[int]] = field(default_factory=list)
     labels: List[str] = field(default_factory=list)
@@ -422,10 +425,12 @@ def bootstrap_auc_ci(
     n_boot: int = 500,
     alpha: float = 0.05,
     random_state: int = 42,
-) -> Tuple[Dict[str, Tuple[float, float]], Tuple[float, float]]:
+) -> Tuple[Dict[str, Tuple[float, float]], Tuple[float, float], Tuple[float, float]]:
+    """返回 (per_class_ci, macro_ci, weighted_ci)。"""
     rng = np.random.default_rng(random_state)
     n = len(y_true)
     macro_vals = []
+    weighted_vals = []
     per_vals: Dict[str, list] = {c: [] for c in classes}
 
     y_bin = np.stack([(y_true == c).astype(int) for c in classes], axis=1)
@@ -437,6 +442,11 @@ def bootstrap_auc_ci(
         try:
             macro = roc_auc_score(yb, sb, average="macro", multi_class="ovr")
             macro_vals.append(macro)
+        except ValueError:
+            pass
+        try:
+            weighted = roc_auc_score(yb, sb, average="weighted", multi_class="ovr")
+            weighted_vals.append(weighted)
         except ValueError:
             pass
         for i, c in enumerate(classes):
@@ -456,7 +466,8 @@ def bootstrap_auc_ci(
 
     per_class_ci = {c: _q(per_vals[c]) for c in classes}
     macro_ci = _q(macro_vals)
-    return per_class_ci, macro_ci
+    weighted_ci = _q(weighted_vals)
+    return per_class_ci, macro_ci, weighted_ci
 
 
 def cross_validate_with_ci(
@@ -487,6 +498,7 @@ def cross_validate_with_ci(
     oof_proba = np.zeros((len(y_arr), len(classes)))
     oof_pred = np.empty(len(y_arr), dtype=object)
     fold_macro = []
+    fold_weighted = []
 
     for fold, (tr, va) in enumerate(skf.split(X, y_arr), 1):
         pipe = build_pipeline(numeric, categorical,
@@ -513,6 +525,11 @@ def cross_validate_with_ci(
             fold_macro.append(float(macro))
         except ValueError:
             pass
+        try:
+            weighted = roc_auc_score(y_bin, proba_sorted, average="weighted", multi_class="ovr")
+            fold_weighted.append(float(weighted))
+        except ValueError:
+            pass
 
     per_class = {}
     for i, c in enumerate(classes):
@@ -524,8 +541,9 @@ def cross_validate_with_ci(
 
     y_bin_all = np.stack([(y_arr == c).astype(int) for c in classes], axis=1)
     macro_auc = float(roc_auc_score(y_bin_all, oof_proba, average="macro", multi_class="ovr"))
+    weighted_auc = float(roc_auc_score(y_bin_all, oof_proba, average="weighted", multi_class="ovr"))
 
-    per_class_ci, macro_ci = bootstrap_auc_ci(
+    per_class_ci, macro_ci, weighted_ci = bootstrap_auc_ci(
         y_arr, oof_proba, classes, n_boot=n_boot, random_state=random_state
     )
 
@@ -537,7 +555,10 @@ def cross_validate_with_ci(
         per_class_auc_ci=per_class_ci,
         macro_auc=macro_auc,
         macro_auc_ci=macro_ci,
+        weighted_auc=weighted_auc,
+        weighted_auc_ci=weighted_ci,
         fold_macro_auc=fold_macro,
+        fold_weighted_auc=fold_weighted,
         classification_report=report,
         confusion_matrix=cm,
         labels=list(classes),
@@ -657,11 +678,15 @@ def compare_models(
             rec.update({
                 "macro_auc": cv.macro_auc,
                 "macro_auc_ci": list(cv.macro_auc_ci),
+                "weighted_auc": cv.weighted_auc,
+                "weighted_auc_ci": list(cv.weighted_auc_ci),
                 "per_class_auc": cv.per_class_auc,
                 "per_class_auc_ci": {k: list(v) for k, v in cv.per_class_auc_ci.items()},
                 "n_samples": cv.n_samples,
+                "class_counts": cv.class_counts,
                 "labels": cv.labels,
                 "fold_macro_auc": cv.fold_macro_auc,
+                "fold_weighted_auc": cv.fold_weighted_auc,
                 "fit_ok": True,
                 "error": None,
             })
@@ -669,12 +694,22 @@ def compare_models(
             rec.update({"fit_ok": False, "error": str(e),
                         "macro_auc": float("nan"),
                         "macro_auc_ci": [float("nan"), float("nan")],
+                        "weighted_auc": float("nan"),
+                        "weighted_auc_ci": [float("nan"), float("nan")],
                         "per_class_auc": {},
                         "per_class_auc_ci": {}})
         rec["seconds"] = round(time.time() - t0, 2)
         results.append(rec)
 
-    results.sort(key=lambda r: (-(r["macro_auc"] if r["fit_ok"] else -1), r["name"]))
+    # 按 weighted_auc 降序排(类别不均衡下更有代表性)
+    def _sort_key(r):
+        if not r["fit_ok"]:
+            return (1, 0.0, r["name"])
+        v = r.get("weighted_auc")
+        if v is None or (isinstance(v, float) and np.isnan(v)):
+            v = r.get("macro_auc", 0.0) or 0.0
+        return (0, -float(v), r["name"])
+    results.sort(key=_sort_key)
     return results
 
 

@@ -202,18 +202,21 @@ def main():
             n_boot=args.n_boot,
             n_estimators=args.n_estimators,
         )
-        print("\n==== Leaderboard ====")
-        print(f"{'Rank':<5}{'Model':<22}{'Macro AUC':>11}{'95% CI':>18}{'time(s)':>9}")
+        print("\n==== Leaderboard (按 Weighted AUC 排序) ====")
+        print(f"{'Rank':<5}{'Model':<22}{'Weighted':>10}{'95% CI':>18}{'Macro':>8}{'time(s)':>9}")
         for i, r in enumerate(compared, 1):
             if r["fit_ok"]:
-                ci = f"[{r['macro_auc_ci'][0]:.2f}, {r['macro_auc_ci'][1]:.2f}]"
-                print(f"{i:<5}{r['name']:<22}{r['macro_auc']:>11.3f}{ci:>18}{r['seconds']:>9}")
+                wci = f"[{r['weighted_auc_ci'][0]:.2f}, {r['weighted_auc_ci'][1]:.2f}]"
+                print(f"{i:<5}{r['name']:<22}{r['weighted_auc']:>10.3f}{wci:>18}{r['macro_auc']:>8.3f}{r['seconds']:>9}")
             else:
                 print(f"{i:<5}{r['name']:<22}   FAILED  {r['error'][:70]}")
 
         # 保存排行
         pd.DataFrame([
             {"rank": i + 1, "name": r["name"], "fit_ok": r["fit_ok"],
+             "weighted_auc": r.get("weighted_auc"),
+             "weighted_auc_ci_lo": r.get("weighted_auc_ci", [None, None])[0],
+             "weighted_auc_ci_hi": r.get("weighted_auc_ci", [None, None])[1],
              "macro_auc": r.get("macro_auc"),
              "macro_auc_ci_lo": r["macro_auc_ci"][0],
              "macro_auc_ci_hi": r["macro_auc_ci"][1],

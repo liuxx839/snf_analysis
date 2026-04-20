@@ -59,16 +59,21 @@ class SurvivalResult:
         return d
 
 
+SNF_FEATURE = "SNF_subtype"
+
+
 def build_survival_matrix(
     df: pd.DataFrame,
     features: List[str],
     endpoint: str,
     with_treatment: bool = True,
+    with_snf: bool = False,
 ) -> Tuple[pd.DataFrame, pd.Series, pd.Series, List[str], List[str]]:
     """返回 (X, T, E, numeric, categorical)。
-    - X: 仅含特征列(未编码)
-    - T: 事件时间(月)
-    - E: 事件是否发生(1/0)
+
+    - with_treatment: 是否把 Adjuvant_* 三字段纳入
+    - with_snf: 是否把 SNF_subtype 作为一个类别特征纳入;
+                如果纳入, 会剔除没有 SNF 标签的病人(~228 例无标签)。
     """
     cfg = SURV_ENDPOINTS[endpoint]
     if features is None:
@@ -76,9 +81,13 @@ def build_survival_matrix(
         if with_treatment:
             features = features + list(TREATMENT_FEATURES)
     features = [f for f in features if f in ALL_FEATURES]
+    if with_snf and SNF_FEATURE not in features:
+        features = features + [SNF_FEATURE]
 
     keep = df.dropna(subset=[cfg["status"], cfg["time"]]).copy()
     keep = keep[keep[cfg["time"]] > 0]
+    if with_snf:
+        keep = keep[keep[SNF_FEATURE].notna()]
 
     X = keep[features].copy()
     T = pd.to_numeric(keep[cfg["time"]], errors="coerce").astype(float)
@@ -112,6 +121,7 @@ def cox_train_test(
     endpoint: str = "OS",
     features: Optional[List[str]] = None,
     with_treatment: bool = True,
+    with_snf: bool = False,
     n_splits: int = 5,
     test_size: float = 0.25,
     random_state: int = 42,
@@ -126,7 +136,7 @@ def cox_train_test(
     from lifelines import CoxPHFitter
 
     X, T, E, numeric, categorical = build_survival_matrix(
-        df, features, endpoint, with_treatment=with_treatment
+        df, features, endpoint, with_treatment=with_treatment, with_snf=with_snf
     )
     if len(X) < 30 or E.sum() < 5:
         raise ValueError(f"{endpoint} 样本量或事件数过少 (n={len(X)}, events={int(E.sum())})")
@@ -230,8 +240,108 @@ def cox_train_test(
         "categorical": categorical,
         "endpoint": endpoint,
         "with_treatment": with_treatment,
+        "with_snf": with_snf,
     }
     return bundle, result
+
+
+# =============================================================================
+# 四变体对比:SNF × Treatment 的 2×2 组合
+# =============================================================================
+VARIANTS = [
+    {"key": "base",       "with_snf": False, "with_treatment": False, "label": "Clinical only (baseline)"},
+    {"key": "treat",      "with_snf": False, "with_treatment": True,  "label": "+ Adjuvant therapy"},
+    {"key": "snf",        "with_snf": True,  "with_treatment": False, "label": "+ SNF subtype"},
+    {"key": "snf+treat",  "with_snf": True,  "with_treatment": True,  "label": "+ SNF + Adjuvant therapy"},
+]
+
+
+def cox_four_variants(
+    df: pd.DataFrame,
+    endpoint: str = "OS",
+    features: Optional[List[str]] = None,
+    n_splits: int = 5,
+    penalizer: float = 0.05,
+    random_state: int = 42,
+    test_size: float = 0.25,
+) -> Dict[str, dict]:
+    """对给定 endpoint 拟合 4 个变体(2x2 = SNF/无 × 治疗/无), 返回它们的 bundle + 结果。
+
+    注意:包含 SNF 的两个变体会自动剔除没有 SNF 标签的样本(训练样本变少),
+    所以同一 endpoint 下 4 个变体的 N/events 不一定相同。
+    """
+    out = {}
+    for v in VARIANTS:
+        try:
+            bundle, result = cox_train_test(
+                df, endpoint=endpoint, features=features,
+                with_treatment=v["with_treatment"],
+                with_snf=v["with_snf"],
+                n_splits=n_splits,
+                penalizer=penalizer,
+                random_state=random_state,
+                test_size=test_size,
+            )
+            out[v["key"]] = {"bundle": bundle, "result": result, "meta": v}
+        except Exception as e:
+            out[v["key"]] = {"error": str(e), "meta": v}
+    return out
+
+
+def predict_per_subtype(
+    bundle: dict,
+    patient: dict,
+    subtype_labels: Optional[List[str]] = None,
+    subtype_probs: Optional[Dict[str, float]] = None,
+    times: Optional[List[float]] = None,
+) -> Dict[str, dict]:
+    """
+    把 patient 依次假设成 SNF1/2/3/4, 分别给出生存曲线。仅对含 SNF 的 Cox 模型有意义;
+    如果 bundle["with_snf"] 为 False 会抛错。
+
+    返回 {
+      "per_subtype": {"SNF1": {...prediction...}, ...},
+      "expected":   {...prediction weighted by subtype_probs...}   # 如果给了 probs
+      "subtype_labels": [...]
+    }
+    """
+    if not bundle.get("with_snf"):
+        raise ValueError("This bundle was trained without SNF; cannot vary subtype.")
+    if subtype_labels is None:
+        subtype_labels = ["SNF1", "SNF2", "SNF3", "SNF4"]
+
+    per = {}
+    weights_times = None
+    weights_surv_stack = []
+    w_list = []
+    for s in subtype_labels:
+        pt = dict(patient)
+        pt["SNF_subtype"] = s
+        pred = predict_survival_curve(bundle, pt, times=times)
+        per[s] = pred
+        if subtype_probs is not None:
+            w = float(subtype_probs.get(s, 0.0))
+            w_list.append(w)
+            weights_surv_stack.append(np.array(pred["survival"], dtype=float))
+            weights_times = pred["times"]
+
+    out: Dict[str, dict] = {"per_subtype": per, "subtype_labels": list(subtype_labels)}
+    if subtype_probs is not None and sum(w_list) > 0:
+        W = np.array(w_list)
+        W = W / W.sum()
+        S = np.stack(weights_surv_stack, axis=0)  # (4, T)
+        exp_surv = (S * W[:, None]).sum(axis=0)
+        out["expected"] = {
+            "times": weights_times,
+            "survival": [float(v) for v in exp_surv],
+            "subtype_probs": {s: float(p) for s, p in zip(subtype_labels, W.tolist())},
+            "milestones": {
+                "p_survive_24mo": float(np.interp(24,  weights_times, exp_surv)),
+                "p_survive_60mo": float(np.interp(60,  weights_times, exp_surv)),
+                "p_survive_120mo": float(np.interp(120, weights_times, exp_surv)),
+            },
+        }
+    return out
 
 
 def predict_survival_curve(
