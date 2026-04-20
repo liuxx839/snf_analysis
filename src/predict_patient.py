@@ -15,7 +15,7 @@ import numpy as np
 import pandas as pd
 import yaml
 
-from data_loader import ALL_FEATURES, SNF_LABELS
+from data_loader import ALL_FEATURES, NUMERIC_FEATURES, SNF_LABELS
 from data_loader import SNF_DESCRIPTION
 
 OUT_DIR = Path(__file__).resolve().parent.parent / "outputs"
@@ -28,15 +28,14 @@ def load_patient(path: Path) -> dict:
     return data
 
 
-def patient_to_row(patient: dict) -> pd.DataFrame:
-    row = {feat: patient.get(feat, None) for feat in ALL_FEATURES}
+def patient_to_row(patient: dict, features=None) -> pd.DataFrame:
+    feats = features or ALL_FEATURES
+    row = {feat: patient.get(feat, None) for feat in feats}
     df = pd.DataFrame([row])
-    for c in ["Age", "Tumor_size_cm", "Positive_axillary_lymph_nodes",
-              "ER_percent", "PR_percent", "Ki67", "HER2_IHC_Status"]:
-        if c in df.columns:
+    for c in feats:
+        if c in NUMERIC_FEATURES:
             df[c] = pd.to_numeric(df[c], errors="coerce")
-    for c in ["Menopause", "Grade", "pT", "pN", "PR_status", "PAM50"]:
-        if c in df.columns:
+        else:
             df[c] = df[c].astype("object").where(df[c].notna(), None)
             df[c] = df[c].apply(lambda v: None if v is None else str(v))
     return df
@@ -56,19 +55,21 @@ def main():
         bundle = pickle.load(f)
     pipe = bundle["pipeline"]
     labels = bundle["labels"]
+    features = bundle.get("features", ALL_FEATURES)
+    model_name = bundle.get("model_name", "RandomForest")
     cv_metrics = bundle.get("cv_metrics", {})
 
-    X_new = patient_to_row(patient)
+    X_new = patient_to_row(patient, features)
     proba = pipe.predict_proba(X_new)[0]
     col_idx = {c: list(pipe.classes_).index(c) for c in labels}
     proba_sorted = np.array([proba[col_idx[c]] for c in labels])
     pred = labels[int(np.argmax(proba_sorted))]
 
     print("=" * 60)
-    print(f"病人: {patient_id}")
+    print(f"病人: {patient_id}   |   模型: {model_name}")
     print("=" * 60)
-    print("\n输入特征:")
-    for k in ALL_FEATURES:
+    print("\n输入特征(模型用到的):")
+    for k in features:
         print(f"  {k:35s}: {patient.get(k, '(缺失, 模型会自动填补)')}")
 
     print("\n---- SNF 分型预测 ----")
@@ -80,11 +81,20 @@ def main():
     print(f"  {SNF_DESCRIPTION.get(pred, '')}")
 
     print("\n---- 模型整体性能(5 折 CV) ----")
-    print(f"  Macro AUC = {cv_metrics.get('macro_auc', float('nan')):.3f}")
+    macro = cv_metrics.get("macro_auc", float("nan"))
+    macro_ci = cv_metrics.get("macro_auc_ci", None)
+    if macro_ci:
+        print(f"  Macro AUC = {macro:.3f}  95% CI [{macro_ci[0]:.3f}, {macro_ci[1]:.3f}]")
+    else:
+        print(f"  Macro AUC = {macro:.3f}")
     for c in labels:
         a = cv_metrics.get("per_class_auc", {}).get(c, None)
+        ci = cv_metrics.get("per_class_auc_ci", {}).get(c, None)
         if a is not None:
-            print(f"  {c} AUC = {a:.3f}")
+            if ci:
+                print(f"  {c} AUC = {a:.3f}  [{ci[0]:.3f}, {ci[1]:.3f}]")
+            else:
+                print(f"  {c} AUC = {a:.3f}")
 
     OUT_DIR.mkdir(exist_ok=True)
     out = {

@@ -35,22 +35,43 @@ def transform_with_pipeline(pipe, X: pd.DataFrame) -> np.ndarray:
     return preproc.transform(X)
 
 
-def find_similar(patient_yaml: Path, k: int = 10, restrict_predicted_subtype: bool = False):
+def find_similar(patient_yaml: Path, k: int = 10, restrict_predicted_subtype: bool = False,
+                 weight_by_importance: bool = True):
     raw = load_table_s1()
     feats = build_feature_frame(raw)
     labeled, _ = split_labeled_unlabeled(feats)
-    X_all, y_all = get_modeling_matrix(labeled, ALL_FEATURES)
 
     with open(MODEL_PATH, "rb") as f:
         bundle = pickle.load(f)
     pipe = bundle["pipeline"]
+    features = bundle.get("features", ALL_FEATURES)
+    model_name = bundle.get("model_name", "RandomForest")
 
+    X_all, y_all = get_modeling_matrix(labeled, features)
     X_all_t = transform_with_pipeline(pipe, X_all)
 
     patient = load_patient(patient_yaml)
     patient_id = patient.get("patient_id", "ME")
-    X_new = patient_to_row(patient)
+    X_new = patient_to_row(patient, features)
     X_new_t = transform_with_pipeline(pipe, X_new)
+
+    # 特征重要性加权(树/线性都支持)
+    if weight_by_importance:
+        clf = pipe.named_steps["clf"]
+        w = None
+        if hasattr(clf, "feature_importances_"):
+            try: w = np.asarray(clf.feature_importances_, dtype=float)
+            except Exception: pass
+        elif hasattr(clf, "coef_"):
+            try:
+                coef = clf.coef_
+                w = np.abs(coef).mean(axis=0) if np.ndim(coef) == 2 else np.abs(coef)
+                w = np.asarray(w, dtype=float)
+            except Exception: pass
+        if w is not None and w.sum() > 0 and w.shape[0] == X_all_t.shape[1]:
+            w = w / w.sum() * len(w)
+            X_all_t = X_all_t * np.sqrt(w)
+            X_new_t = X_new_t * np.sqrt(w)
 
     dists = np.linalg.norm(X_all_t - X_new_t, axis=1)
 
@@ -83,8 +104,10 @@ def find_similar(patient_yaml: Path, k: int = 10, restrict_predicted_subtype: bo
     out.index.name = "PatientCode"
 
     print("=" * 90)
-    print(f"病人 {patient_id} 预测 SNF 亚型: {pred}  概率分布: " + ", ".join(f"{c}={p:.2f}" for c,p in zip(labels, proba_sorted)))
-    print(f"在原队列(N={len(labeled)})中,临床特征空间下最相似的 Top {k}{'(只看同亚型)' if restrict_predicted_subtype else ''}:")
+    print(f"病人 {patient_id}   |   模型: {model_name}")
+    print(f"预测 SNF 亚型: {pred}  概率分布: " + ", ".join(f"{c}={p:.2f}" for c,p in zip(labels, proba_sorted)))
+    wtag = "(按特征重要性加权)" if weight_by_importance else "(等权欧氏距离)"
+    print(f"在原队列(N={len(labeled)})中, Top {k} 最相似 {wtag}{'; 仅同亚型' if restrict_predicted_subtype else ''}:")
     print("=" * 90)
     with pd.option_context("display.max_rows", None, "display.max_columns", None,
                            "display.width", 200):
@@ -119,9 +142,13 @@ def main():
     ap.add_argument("--k", type=int, default=15, help="返回最相似的前 K 名")
     ap.add_argument("--same-subtype-only", action="store_true",
                     help="只在预测的亚型内找相似病人")
+    ap.add_argument("--no-weight", action="store_true",
+                    help="不按特征重要性加权,用朴素欧氏距离(默认加权)")
     args = ap.parse_args()
 
-    find_similar(Path(args.patient), k=args.k, restrict_predicted_subtype=args.same_subtype_only)
+    find_similar(Path(args.patient), k=args.k,
+                 restrict_predicted_subtype=args.same_subtype_only,
+                 weight_by_importance=not args.no_weight)
 
 
 if __name__ == "__main__":
