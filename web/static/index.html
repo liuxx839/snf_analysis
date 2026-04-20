@@ -1,0 +1,137 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>SNF 分型预测(临床特征)</title>
+<link rel="stylesheet" href="/static/style.css" />
+</head>
+<body>
+<header>
+  <h1>SNF 4 分型预测 <span class="sub">HR+/HER2- 乳腺癌 · 仅用临床特征</span></h1>
+  <p class="caption">
+    数据来自 Nature Genetics 2023 (<a target="_blank" href="https://www.nature.com/articles/s41588-023-01507-7">s41588-023-01507-7</a>) Table S1,共 351 例有 SNF 标签。
+    仅用于学习参考,<b>不是医疗器械</b>。
+  </p>
+</header>
+
+<nav class="tabs">
+  <button class="tab active" data-tab="tab-predict">① 病人信息 / 预测</button>
+  <button class="tab" data-tab="tab-train">② 训练配置 / 子人群</button>
+  <button class="tab" data-tab="tab-results">③ 模型评估 + 原文对比</button>
+  <button class="tab" data-tab="tab-similar">④ 相似病人</button>
+</nav>
+
+<main>
+  <!-- ===================== Tab 1: 病人输入 + 预测 ===================== -->
+  <section id="tab-predict" class="tab-panel active">
+    <div class="card">
+      <h2>输入你的信息</h2>
+      <p class="hint">未知项保留为空,模型会自动填补(数值→中位数,类别→Missing)。</p>
+      <form id="patient-form" class="grid"></form>
+      <div class="actions">
+        <button id="btn-predict" class="primary">预测 SNF 亚型</button>
+        <button id="btn-save-default" class="ghost">保存为默认</button>
+        <button id="btn-load-default" class="ghost">载入默认</button>
+        <button id="btn-load-example" class="ghost">载入示例</button>
+      </div>
+    </div>
+
+    <div id="predict-result" class="card hidden">
+      <h2>预测结果</h2>
+      <div id="predict-summary"></div>
+      <div id="prob-bars"></div>
+      <div class="interpretation" id="interpretation"></div>
+      <details>
+        <summary>4 个亚型的生物学背景</summary>
+        <div id="subtype-desc"></div>
+      </details>
+      <p class="hint" id="predict-model-info"></p>
+    </div>
+  </section>
+
+  <!-- ===================== Tab 2: 训练 / 子人群 ===================== -->
+  <section id="tab-train" class="tab-panel">
+    <div class="card">
+      <h2>选择子人群进行训练</h2>
+      <p class="hint">
+        可限定训练样本(比如"只用绝经后"、"只用 pN0–pN1"、"Ki67 ≥ 15%"),模型会只在这部分病人上学习,
+        交叉验证和置信区间也只反映这一群人。样本太少时模型会变差甚至训练失败。
+      </p>
+
+      <h3>数值字段范围</h3>
+      <div id="numeric-filters" class="grid"></div>
+
+      <h3>类别字段取值</h3>
+      <div id="categorical-filters" class="grid"></div>
+
+      <h3>使用哪些特征</h3>
+      <div id="feature-checkboxes" class="checkbox-grid"></div>
+
+      <div class="row">
+        <label>CV 折数 <input id="n-splits" type="number" value="5" min="2" max="10" /></label>
+        <label>Bootstrap 次数 <input id="n-boot" type="number" value="400" min="50" max="5000" step="50" /></label>
+        <label>树数 <input id="n-estimators" type="number" value="500" min="100" max="2000" step="100" /></label>
+      </div>
+
+      <div class="actions">
+        <button id="btn-train" class="primary">在子人群上训练</button>
+        <button id="btn-reset-filter" class="ghost">重置筛选</button>
+        <span id="filter-stat" class="stat"></span>
+      </div>
+    </div>
+  </section>
+
+  <!-- ===================== Tab 3: 结果 + 基准对比 ===================== -->
+  <section id="tab-results" class="tab-panel">
+    <div class="card">
+      <h2>模型评估 <span class="hint">(5 折 CV + 500 次 bootstrap 95% CI)</span></h2>
+      <p class="hint">先在 Tab ② 训练,或使用默认全队列模型。</p>
+      <div id="cv-summary"></div>
+
+      <h3>AUC 对比:你的模型 vs 原文</h3>
+      <div id="bench-table"></div>
+
+      <h3>ROC 曲线</h3>
+      <div class="canvas-wrap">
+        <canvas id="roc-canvas" width="520" height="520"></canvas>
+      </div>
+
+      <h3>混淆矩阵(Out-of-fold)</h3>
+      <div id="cm-table"></div>
+
+      <h3>Top 特征重要性</h3>
+      <div id="feat-imp"></div>
+
+      <h3>分类报告(OOF)</h3>
+      <pre id="classification-report"></pre>
+    </div>
+  </section>
+
+  <!-- ===================== Tab 4: 相似病人 ===================== -->
+  <section id="tab-similar" class="tab-panel">
+    <div class="card">
+      <h2>在队列中找最相似病人</h2>
+      <div class="row">
+        <label>Top K <input id="sim-k" type="number" value="15" min="3" max="100" /></label>
+        <label><input type="checkbox" id="sim-weight" checked /> 按特征重要性加权</label>
+        <label><input type="checkbox" id="sim-same" /> 只在预测亚型内找</label>
+        <button id="btn-similar" class="primary">查找</button>
+      </div>
+      <p class="hint">
+        <b>相似定义:</b> 把每个病人的 13 个临床字段送进训练时的预处理管道(数值 z-score 标准化,类别 One-Hot),
+        在这个特征空间里计算到你的欧氏距离,距离越小越相似。
+        勾选"按特征重要性加权"后,随机森林里更重要的维度会被放大(类似 <i>w_i · (x<sub>i</sub> − y<sub>i</sub>)²</i>)。
+      </p>
+
+      <div id="sim-summary"></div>
+
+      <h3>相似病人列表</h3>
+      <div id="sim-table" class="table-scroll"></div>
+    </div>
+  </section>
+</main>
+
+<script src="/static/app.js"></script>
+</body>
+</html>
