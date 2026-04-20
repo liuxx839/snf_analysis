@@ -68,9 +68,9 @@ FEATURE_DESCRIPTION: dict = {
     "pN": "术后 N 分期(淋巴结)",
     "PR_status": "PR 阳性/阴性",
     "PAM50": "PAM50 分子分型(LumA/LumB/Her2/Basal/Normal)",
-    "Adjuvant_chemotherapy":     "术后辅助化疗(是/否) —— 治疗端变量, 术前不可用",
-    "Adjuvant_radiotherapy":     "术后辅助放疗(是/否) —— 治疗端变量, 术前不可用",
-    "Adjuvant_endocrine_therapy":"术后辅助内分泌治疗(是/否) —— 治疗端变量, 术前不可用",
+    "Adjuvant_chemotherapy":     "术后辅助化疗(Yes/No) —— 治疗端变量; 术后病人建议填入, 术前病人请留空",
+    "Adjuvant_radiotherapy":     "术后辅助放疗(Yes/No) —— 治疗端变量; 术后病人建议填入, 术前病人请留空",
+    "Adjuvant_endocrine_therapy":"术后辅助内分泌治疗(Yes/No) —— 治疗端变量; 术后病人建议填入, 术前病人请留空",
 }
 
 SNF_LABELS = ["SNF1", "SNF2", "SNF3", "SNF4"]

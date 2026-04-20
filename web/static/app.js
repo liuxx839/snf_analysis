@@ -42,10 +42,10 @@ async function init() {
   META.features.forEach(f => {
     const wrap = document.createElement("label");
     const isTreatment = (META.treatment_features || []).includes(f);
-    const checked = isTreatment ? "" : "checked";
     const desc = META.feature_description ? META.feature_description[f] : "";
-    const tag = isTreatment ? ' <span class="badge medium" style="font-size:10px">治疗端·术前不可用</span>' : "";
-    wrap.innerHTML = `<input type="checkbox" data-feature="${f}" ${checked}> ${f}${tag}`;
+    const tag = isTreatment ? ' <span class="badge medium" style="font-size:10px">治疗端·术前慎用</span>' : "";
+    // 默认全勾上(包括辅助治疗), 因为用户多数是术后来复盘的
+    wrap.innerHTML = `<input type="checkbox" data-feature="${f}" checked> ${f}${tag}`;
     wrap.title = desc || f;
     fbox.appendChild(wrap);
   });
