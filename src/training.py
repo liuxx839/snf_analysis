@@ -59,8 +59,70 @@ from sklearn.discriminant_analysis import (
 )
 
 
-from sklearn.base import BaseEstimator, ClassifierMixin
+from sklearn.base import BaseEstimator, ClassifierMixin, clone
 from sklearn.preprocessing import LabelEncoder as _LE
+
+
+class _OvRMultiBinary(BaseEstimator, ClassifierMixin):
+    """
+    One-vs-Rest 包装:为每一类训练一个独立二分类器(是 / 不是 SNF_i)。
+    与 sklearn OneVsRestClassifier 相比,这里:
+      - 每个子模型可以是任意 base 算法(通过 base_builder);
+      - predict_proba 把 4 个独立 "P(is_i)" 做 softmax 归一化后返回;
+      - classes_ / predict 对外完全兼容多分类接口;
+      - 能单独暴露 per_class_raw_proba 方便调试。
+    """
+    def __init__(self, base_builder=None, random_state=42):
+        self.base_builder = base_builder
+        self.random_state = random_state
+
+    def fit(self, X, y, **kw):
+        y = np.asarray(y)
+        self.classes_ = np.array(sorted(np.unique(y)))
+        self.estimators_ = []
+        for c in self.classes_:
+            est = self.base_builder(self.random_state)
+            y_bin = (y == c).astype(int)
+            est.fit(X, y_bin, **kw)
+            self.estimators_.append(est)
+        return self
+
+    def _raw_pos_proba(self, X):
+        out = []
+        for est in self.estimators_:
+            if hasattr(est, "predict_proba"):
+                p = est.predict_proba(X)
+                if p.shape[1] == 2:
+                    out.append(p[:, 1])
+                else:
+                    out.append(p[:, 0])
+            elif hasattr(est, "decision_function"):
+                d = est.decision_function(X)
+                out.append(1.0 / (1.0 + np.exp(-d)))
+            else:
+                pred = est.predict(X).astype(float)
+                out.append(pred)
+        return np.stack(out, axis=1)
+
+    def predict_proba(self, X):
+        raw = self._raw_pos_proba(X)
+        s = raw.sum(axis=1, keepdims=True)
+        s[s == 0] = 1.0
+        return raw / s
+
+    def predict(self, X):
+        idx = np.argmax(self._raw_pos_proba(X), axis=1)
+        return self.classes_[idx]
+
+    def set_params(self, **kw):
+        for k, v in kw.items(): setattr(self, k, v)
+        return self
+
+
+def _ovr_builder(base_fn):
+    def _build(rs):
+        return _OvRMultiBinary(base_builder=base_fn, random_state=rs)
+    return _build
 
 
 class _XGBWithLabelEncoder(BaseEstimator, ClassifierMixin):
@@ -164,6 +226,62 @@ MODEL_ZOO: dict = {
         hidden_layer_sizes=(64, 32), max_iter=800, random_state=rs,
         early_stopping=False, alpha=1e-3),
 }
+
+
+# ---------------------------------------------------------------------------
+# OvR(4 个独立二分类)组合
+# ---------------------------------------------------------------------------
+# 针对"是否 SNF_i"各训练一个二分类器, 在 predict 时 softmax 归一再 argmax。
+# 与原生多分类的区别:每棵树/每条回归线只关心自己那一类, 对类别不均衡更灵活。
+def _binary_rf(rs):
+    return RandomForestClassifier(
+        n_estimators=500, class_weight="balanced",
+        min_samples_leaf=1, random_state=rs, n_jobs=-1)
+
+def _binary_lr(rs):
+    return LogisticRegression(
+        max_iter=2000, C=1.0, class_weight="balanced",
+        solver="lbfgs", random_state=rs)
+
+def _binary_lr_l1(rs):
+    return LogisticRegression(
+        max_iter=2000, C=0.5, penalty="l1", solver="saga",
+        class_weight="balanced", random_state=rs)
+
+def _binary_svm(rs):
+    return SVC(kernel="linear", probability=True,
+               class_weight="balanced", random_state=rs)
+
+def _binary_xgb(rs):
+    try:
+        from xgboost import XGBClassifier
+    except Exception:
+        return None
+    return XGBClassifier(
+        n_estimators=400, learning_rate=0.05, max_depth=4,
+        subsample=0.9, colsample_bytree=0.9,
+        objective="binary:logistic", tree_method="hist",
+        random_state=rs, n_jobs=-1, eval_metric="logloss")
+
+def _binary_lgbm(rs):
+    try:
+        from lightgbm import LGBMClassifier
+    except Exception:
+        return None
+    return LGBMClassifier(
+        n_estimators=400, learning_rate=0.05, num_leaves=31,
+        class_weight="balanced", random_state=rs,
+        n_jobs=-1, verbose=-1)
+
+
+MODEL_ZOO.update({
+    "OvR-LogReg":      _ovr_builder(_binary_lr),
+    "OvR-LogReg-L1":   _ovr_builder(_binary_lr_l1),
+    "OvR-RandomForest":_ovr_builder(_binary_rf),
+    "OvR-LinearSVM":   _ovr_builder(_binary_svm),
+    "OvR-XGBoost":     _ovr_builder(_binary_xgb),
+    "OvR-LightGBM":    _ovr_builder(_binary_lgbm),
+})
 
 
 def list_available_models() -> list[str]:

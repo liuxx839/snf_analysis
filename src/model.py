@@ -158,10 +158,9 @@ def main():
                     help="只比较这些模型;默认比较全部。")
     ap.add_argument("--list-models", action="store_true", help="列出可用算法后退出。")
     ap.add_argument("--with-treatment", dest="with_treatment", action="store_true",
-                    help="加入术后辅助治疗三字段作为特征(默认已加, 术前病人请改用 --no-treatment)。")
-    ap.add_argument("--no-treatment", dest="with_treatment", action="store_false",
-                    help="排除辅助治疗三字段(术前病人、或想避免治疗端信息泄漏时使用)。")
-    ap.set_defaults(with_treatment=True)
+                    help="加入术后辅助治疗三字段作为特征(默认不加; 术后病人想参考时加上)。")
+    ap.add_argument("--no-treatment", dest="with_treatment", action="store_false")
+    ap.set_defaults(with_treatment=False)
     ap.add_argument("--n-splits", type=int, default=5)
     ap.add_argument("--n-boot", type=int, default=500)
     ap.add_argument("--n-estimators", type=int, default=500)
