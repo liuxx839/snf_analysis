@@ -133,9 +133,25 @@ def main():
     selected = [args.only_variant] if args.only_variant else [v["key"] for v in VARIANTS]
 
     subtype_curves = {}  # ep -> vk -> {SNF1: pred, SNF2: pred, ..., expected: pred}
+    matched_rows = []
     for ep in SURV_ENDPOINTS.keys():
         variants = cox_four_variants(df, endpoint=ep, n_splits=args.n_splits,
                                      penalizer=args.penalizer)
+        # 同时跑 matched 版本(只用 SNF 标签 cohort, 4 变体 N 一致)
+        variants_matched = cox_four_variants(
+            df, endpoint=ep, n_splits=args.n_splits,
+            penalizer=args.penalizer, restrict_to_snf_labeled=True)
+        for vk in selected:
+            vm = variants_matched.get(vk)
+            if vm is None or "error" in vm: continue
+            r2 = vm["result"]
+            matched_rows.append({
+                "endpoint": ep, "variant": vk, "label": vm["meta"]["label"],
+                "n_total": r2.n_total, "n_events": r2.n_events,
+                "cv_c_index": r2.cv_c_index,
+                "train_c_index": r2.train_c_index,
+                "test_c_index": r2.test_c_index,
+            })
         endpoint_results[ep] = {}
         subtype_curves[ep] = {}
         for vk in selected:
@@ -168,7 +184,23 @@ def main():
 
     df_out = pd.DataFrame(rows).round(3)
 
-    # 漂亮打印:按端点分组
+    # ---------- Matched cohort (n=350 一致) 公平对比 ----------
+    if matched_rows:
+        df_matched = pd.DataFrame(matched_rows).round(3)
+        print()
+        print("=" * 80)
+        print("Matched cohort:只用有 SNF 标签的 ~350 例;4 变体 N 一致, 公平比较加 SNF/治疗的边际贡献")
+        print("=" * 80)
+        for ep, chunk in df_matched.groupby("endpoint", sort=False):
+            print(f"\n-- {ep} --")
+            print(chunk[["variant","label","n_total","n_events",
+                         "cv_c_index","train_c_index","test_c_index"]].to_string(index=False))
+
+    # ---------- Full cohort (各取最大样本) ----------
+    print()
+    print("=" * 80)
+    print("Full cohort:base/treat 用全部 ~578 例; snf 系列剔除无 SNF 后 ~350 例")
+    print("=" * 80)
     for ep, chunk in df_out.groupby("endpoint", sort=False):
         print()
         print(f"-------- {ep}  {SURV_ENDPOINTS[ep]['label']} --------")
@@ -193,6 +225,9 @@ def main():
                 print(f"  {'Expected':<10}{m['p_survive_24mo']*100:>9.1f}%{m['p_survive_60mo']*100:>9.1f}%{m['p_survive_120mo']*100:>9.1f}%{'--':>8}")
 
     df_out.to_csv(OUT_DIR / f"survival_report_{pid}.csv", index=False)
+    if matched_rows:
+        pd.DataFrame(matched_rows).round(3).to_csv(
+            OUT_DIR / f"survival_report_{pid}_matched.csv", index=False)
     with open(OUT_DIR / f"survival_prediction_{pid}.json", "w", encoding="utf-8") as f:
         json.dump({
             "patient_id": pid,

@@ -165,7 +165,14 @@
 
       <div id="surv-perf" class="hidden">
         <h3>变体 × 端点性能对比(Train / Test / CV C-index)</h3>
+        <p class="hint">两组对比:
+          <b>Full cohort</b> 让每个变体用其最大可用样本(base/treat ~578, snf 系列 ~350);
+          <b>Matched cohort (n≈350)</b> 强制 4 个变体都只用有 SNF 标签的 350 个病人, 这样 N 一致, 加 SNF / 加治疗的边际贡献可以公平比较。
+        </p>
+        <h4>① Full cohort(各取最大样本)</h4>
         <div id="surv-perf-table" class="table-scroll"></div>
+        <h4>② Matched cohort(n≈350 一致, 公平对比加 SNF / 加治疗的提升)</h4>
+        <div id="surv-perf-matched" class="table-scroll"></div>
       </div>
 
       <div id="surv-plot-wrap" class="hidden">
@@ -177,12 +184,21 @@
               <option value="byvariant">按变体对比(base/treat/snf/snf+treat)</option>
             </select>
           </label>
-          <label>使用哪个 Cox 模型:
-            <select id="surv-view-variant">
-              <option value="snf+treat" selected>+ SNF + Adjuvant therapy</option>
-              <option value="snf">+ SNF subtype (no treatment)</option>
+          <label>Cohort:
+            <select id="surv-cohort">
+              <option value="full" selected>Full(各取最大样本)</option>
+              <option value="matched">Matched(n≈350,4 变体 N 一致)</option>
             </select>
           </label>
+          <label>Cox 模型:
+            <select id="surv-view-variant">
+              <option value="snf+treat" selected>+ SNF + Adjuvant therapy</option>
+              <option value="snf">+ SNF subtype</option>
+              <option value="treat">+ Adjuvant therapy(不含 SNF)</option>
+              <option value="base">Baseline(临床特征 only)</option>
+            </select>
+          </label>
+          <label><input type="checkbox" id="surv-show-baseline" checked> 叠加 Baseline 参考(灰色虚线)</label>
           <span id="surv-snf-prob" class="stat"></span>
         </div>
         <div class="row" id="surv-variant-picker"></div>
