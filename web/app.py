@@ -48,6 +48,11 @@ from training import (  # noqa: E402
     list_available_models,
     predict_with_ci,
 )
+from survival import (  # noqa: E402
+    SURV_ENDPOINTS,
+    cox_train_test,
+    predict_survival_curve,
+)
 
 app = FastAPI(title="SNF subtype predictor", version="0.2.0")
 
@@ -80,7 +85,7 @@ _state: dict = {
 }
 
 
-_DEFAULT_FEATURES = list(ALL_FEATURES)  # 默认包含全部字段(含辅助治疗三字段)
+_DEFAULT_FEATURES = list(NUMERIC_FEATURES) + list(CATEGORICAL_FEATURES)  # 默认不含治疗
 
 
 def _default_train_if_needed():
@@ -134,6 +139,20 @@ class SimilarRequest(BaseModel):
     k: int = 15
     same_subtype_only: bool = False
     weight_by_importance: bool = True
+
+
+class SurvivalTrainRequest(BaseModel):
+    endpoints: list[str] | None = None  # 默认 ["OS","RFS","DMFS"]
+    with_treatment: bool = True
+    features: list[str] | None = None
+    n_splits: int = 5
+    penalizer: float = 0.05
+    random_state: int = 42
+
+
+class SurvivalPredictRequest(BaseModel):
+    patient: dict
+    endpoints: list[str] | None = None  # 若为空则使用已训练的所有端点
 
 
 def _patient_to_row(patient: dict, features: list[str]) -> pd.DataFrame:
@@ -521,6 +540,79 @@ def similar(req: SimilarRequest):
         "survival_summary": summary,
         "subtype_distribution": {k: int(v) for k, v in subtype_dist.items()},
         "weight_by_importance": req.weight_by_importance,
+    }
+
+
+# ---------------------------------------------------------------------------
+# 生存预测(CoxPH)
+# ---------------------------------------------------------------------------
+_surv_state: dict = {}  # {endpoint: {"bundle":..., "result":...}}
+
+
+@app.post("/api/survival/train")
+def survival_train(req: SurvivalTrainRequest):
+    endpoints = req.endpoints or list(SURV_ENDPOINTS.keys())
+    out = {}
+    for ep in endpoints:
+        try:
+            bundle, result = cox_train_test(
+                _feats,
+                endpoint=ep,
+                features=req.features,
+                with_treatment=req.with_treatment,
+                n_splits=req.n_splits,
+                penalizer=req.penalizer,
+                random_state=req.random_state,
+            )
+            _surv_state[ep] = {"bundle": bundle, "result": result}
+            out[ep] = result.to_dict()
+        except Exception as e:
+            out[ep] = {"error": str(e)}
+    return {
+        "with_treatment": req.with_treatment,
+        "features": req.features,
+        "endpoints": out,
+    }
+
+
+@app.post("/api/survival/predict")
+def survival_predict(req: SurvivalPredictRequest):
+    if not _surv_state:
+        raise HTTPException(400, "尚未训练生存模型,请先调用 /api/survival/train。")
+    endpoints = req.endpoints or list(_surv_state.keys())
+    out = {}
+    for ep in endpoints:
+        rec = _surv_state.get(ep)
+        if rec is None:
+            out[ep] = {"error": "该端点尚未训练"}
+            continue
+        try:
+            pred = predict_survival_curve(rec["bundle"], req.patient)
+            res = rec["result"]
+            out[ep] = {
+                "label": SURV_ENDPOINTS[ep]["label"],
+                "prediction": pred,
+                "model_performance": {
+                    "n_total": res.n_total,
+                    "n_events": res.n_events,
+                    "cv_c_index": res.cv_c_index,
+                    "cv_c_index_ci": list(res.cv_c_index_ci),
+                    "train_c_index": res.train_c_index,
+                    "test_c_index": res.test_c_index,
+                },
+                "top_coefficients": res.feature_coef[:8],
+            }
+        except Exception as e:
+            out[ep] = {"error": str(e)}
+    return {"endpoints": out}
+
+
+@app.get("/api/survival/status")
+def survival_status():
+    return {
+        "trained_endpoints": list(_surv_state.keys()),
+        "available_endpoints": list(SURV_ENDPOINTS.keys()),
+        "endpoint_labels": {k: v["label"] for k, v in SURV_ENDPOINTS.items()},
     }
 
 

@@ -58,7 +58,7 @@ bash run_web.sh
 # 然后浏览器打开 http://localhost:8000
 ```
 
-前端基于 FastAPI + 原生 HTML/JS(不依赖 Streamlit),有 5 个 Tab:
+前端基于 FastAPI + 原生 HTML/JS(不依赖 Streamlit),有 6 个 Tab:
 
 1. **病人信息 / 预测** — 自动从队列生成表单(数值给出中位数提示,类别给出每个取值的样本数),
    支持"保存为默认 / 载入默认 / 载入示例";预测结果显示每个亚型的**概率 + 95% 置信区间**
@@ -75,6 +75,10 @@ bash run_web.sh
 4. **模型评估 + 原文对比** — 上一次训练模型的详情:Macro / Per-class AUC + bootstrap 95% CI、
    ROC、混淆矩阵、特征重要性、完整分类报告,一张表对比原文 Transcriptomics RF 和 Pathology CNN。
 5. **相似病人** — 可以选择"是否按特征重要性加权欧氏距离"、"是否只在预测亚型内找"。
+6. **生存预测** — 用 Cox 比例风险模型分别为 **OS / RFS / DMFS** 拟合,报告训练/测试/5 折 CV 的
+   **C-index**(带 95% CI),并给你的个人 **生存曲线** + 2/5/10 年的生存概率 + partial hazard ratio。
+   默认**包含辅助治疗三字段**(因为"上没上化疗 / 放疗 / 内分泌治疗"对生存影响很直接),
+   可取消勾选"包含辅助治疗字段"再重新训练。
 
 > **注:辅助治疗三字段** (`Adjuvant_chemotherapy` / `Adjuvant_radiotherapy` / `Adjuvant_endocrine_therapy`)
 > 是"治疗端"变量:手术后医生根据肿瘤风险决定的化疗/放疗/内分泌治疗。
@@ -96,6 +100,9 @@ bash run_web.sh
 | `/api/compare` | POST | 一次性比较多个模型, 返回排行榜, 可选择自动采用最佳 |
 | `/api/predict` | POST | 预测一个病人的 SNF 亚型 + 每类概率 CI |
 | `/api/similar` | POST | 找最相似 Top-K 病人 |
+| `/api/survival/train` | POST | 训练 CoxPH 模型 (OS/RFS/DMFS), 返回 train/test/CV C-index |
+| `/api/survival/predict` | POST | 用已训练模型对一个病人预测个人生存曲线 + 2/5/10 年概率 |
+| `/api/survival/status` | GET | 当前已训练哪些端点 |
 
 ---
 
@@ -149,6 +156,9 @@ bash run_all.sh my_patient.yaml
 3. **找最相似的 Top-20 病人** (`src/find_similar.py`):按特征重要性加权的欧氏距离,
    产出 `outputs/similar_patients_ME.csv`。
 4. **画 KM 曲线** (`src/survival_compare.py`)。
+5. **CoxPH 个人生存预测** (`src/survival_predict.py`):为 OS/RFS/DMFS 分别拟合 Cox 模型,
+   报告 train/test/CV C-index,产出 `outputs/survival_report_ME.csv`、`survival_prediction_ME.json`
+   和个人生存曲线图 `survival_curve_ME.png`。默认**包含辅助治疗字段**,可以加 `--no-treatment` 关闭。
 
 常见变体:
 

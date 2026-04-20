@@ -43,9 +43,9 @@ async function init() {
     const wrap = document.createElement("label");
     const isTreatment = (META.treatment_features || []).includes(f);
     const desc = META.feature_description ? META.feature_description[f] : "";
-    const tag = isTreatment ? ' <span class="badge medium" style="font-size:10px">治疗端·术前慎用</span>' : "";
-    // 默认全勾上(包括辅助治疗), 因为用户多数是术后来复盘的
-    wrap.innerHTML = `<input type="checkbox" data-feature="${f}" checked> ${f}${tag}`;
+    const tag = isTreatment ? ' <span class="badge medium" style="font-size:10px">治疗端·默认不勾</span>' : "";
+    const checked = isTreatment ? "" : "checked";
+    wrap.innerHTML = `<input type="checkbox" data-feature="${f}" ${checked}> ${f}${tag}`;
     wrap.title = desc || f;
     fbox.appendChild(wrap);
   });
@@ -699,6 +699,163 @@ function renderSimilar(r) {
   });
   html += "</tbody></table>";
   document.getElementById("sim-table").innerHTML = html;
+}
+
+// ---------- survival ----------
+document.getElementById("btn-surv-train").addEventListener("click", async () => {
+  const payload = {
+    with_treatment: document.getElementById("surv-treatment").checked,
+    n_splits: parseInt(document.getElementById("surv-splits").value),
+    penalizer: parseFloat(document.getElementById("surv-pen").value),
+  };
+  const btn = document.getElementById("btn-surv-train");
+  btn.disabled = true; btn.textContent = "训练中...";
+  const status = document.getElementById("surv-status");
+  status.textContent = "拟合 OS / RFS / DMFS 三个 Cox 模型, 约 5-15 秒...";
+  try {
+    const r = await fetchJSON("/api/survival/train", {
+      method: "POST", headers: {"content-type": "application/json"},
+      body: JSON.stringify(payload),
+    });
+    renderSurvPerf(r);
+    status.textContent = "训练完成, 可以点击「用当前病人预测」。";
+  } catch (e) {
+    alert("训练失败: " + e.message);
+    status.textContent = "";
+  } finally {
+    btn.disabled = false; btn.textContent = "训练生存模型(OS + RFS + DMFS)";
+  }
+});
+
+document.getElementById("btn-surv-predict").addEventListener("click", async () => {
+  const patient = collectPatient();
+  const btn = document.getElementById("btn-surv-predict");
+  btn.disabled = true; btn.textContent = "预测中...";
+  try {
+    const r = await fetchJSON("/api/survival/predict", {
+      method: "POST", headers: {"content-type": "application/json"},
+      body: JSON.stringify({ patient }),
+    });
+    renderSurvPrediction(r);
+  } catch (e) {
+    alert("预测失败: " + e.message + "\n如果还没训练模型, 请先点击「训练生存模型」。");
+  } finally {
+    btn.disabled = false; btn.textContent = "用当前病人预测";
+  }
+});
+
+function renderSurvPerf(r) {
+  document.getElementById("surv-perf").classList.remove("hidden");
+  const box = document.getElementById("surv-perf-table");
+  let html = `<table class="data"><thead><tr>
+    <th>端点</th><th>N</th><th>事件数</th>
+    <th>CV C-index (mean ± CI)</th><th>Train C-index</th><th>Test C-index</th>
+  </tr></thead><tbody>`;
+  Object.entries(r.endpoints).forEach(([ep, v]) => {
+    if (v.error) {
+      html += `<tr><td>${ep}</td><td colspan="5" style="color:#b91c1c">${escapeHTML(v.error)}</td></tr>`;
+      return;
+    }
+    const ci = `[${v.cv_c_index_ci[0].toFixed(3)}, ${v.cv_c_index_ci[1].toFixed(3)}]`;
+    html += `<tr>
+      <td><b>${ep}</b></td><td>${v.n_total}</td><td>${v.n_events}</td>
+      <td>${v.cv_c_index.toFixed(3)} &nbsp; ${ci}</td>
+      <td>${v.train_c_index.toFixed(3)}</td>
+      <td><b>${v.test_c_index.toFixed(3)}</b></td>
+    </tr>`;
+  });
+  html += "</tbody></table><p class='hint'>C-index 约等于 AUC:0.5=随机,1.0=完美区分风险高低。在只用临床特征的前提下,DMFS/RFS 能到 0.75-0.80 已经很不错。</p>";
+  box.innerHTML = html;
+}
+
+function renderSurvPrediction(r) {
+  document.getElementById("surv-plot-wrap").classList.remove("hidden");
+  drawSurvCurves(r.endpoints);
+
+  const msBox = document.getElementById("surv-milestones");
+  let html = `<h3>关键时间点生存概率</h3><table class="data"><thead><tr>
+    <th>端点</th><th>Partial HR</th><th>2 年 (24 mo)</th><th>5 年 (60 mo)</th><th>10 年 (120 mo)</th><th>中位生存</th><th>Test C-index</th>
+  </tr></thead><tbody>`;
+  Object.entries(r.endpoints).forEach(([ep, v]) => {
+    if (v.error) return;
+    const p = v.prediction;
+    const hr = p.partial_hazard;
+    const hrTag = hr < 0.85 ? "color:#166534" : (hr > 1.15 ? "color:#b91c1c" : "");
+    const med = p.median_survival_months == null ? "未达到" : `${p.median_survival_months.toFixed(0)} mo`;
+    html += `<tr>
+      <td><b>${ep}</b> ${escapeHTML(v.label)}</td>
+      <td style="${hrTag}">${hr.toFixed(2)} ${hr<1?"(优于基线)":(hr>1?"(高于基线)":"")}</td>
+      <td>${(p.milestones.p_survive_24mo*100).toFixed(1)}%</td>
+      <td>${(p.milestones.p_survive_60mo*100).toFixed(1)}%</td>
+      <td>${(p.milestones.p_survive_120mo*100).toFixed(1)}%</td>
+      <td>${med}</td>
+      <td>${v.model_performance.test_c_index.toFixed(3)}</td>
+    </tr>`;
+  });
+  html += "</tbody></table>";
+  msBox.innerHTML = html;
+
+  const coefBox = document.getElementById("surv-coef");
+  const firstOk = Object.entries(r.endpoints).find(([_, v]) => !v.error);
+  if (firstOk) {
+    const [ep, v] = firstOk;
+    coefBox.innerHTML = `<b>${ep} 模型里最显著的前 8 个特征</b> (按 p 值排序, HR > 1 = 风险增加):<br>`
+      + v.top_coefficients.map(c =>
+          `<code>${c.feature}</code>: HR = ${c.hazard_ratio.toFixed(2)}, p = ${c.p.toExponential(2)}`
+        ).join(" &nbsp;|&nbsp; ");
+  }
+}
+
+function drawSurvCurves(endpoints) {
+  const canvas = document.getElementById("surv-canvas");
+  const ctx = canvas.getContext("2d");
+  const W = canvas.width, H = canvas.height;
+  ctx.clearRect(0, 0, W, H);
+  const P = { top: 30, right: 20, bottom: 50, left: 60 };
+  const innerW = W - P.left - P.right, innerH = H - P.top - P.bottom;
+
+  // x: 0..120 mo, y: 0..1
+  const maxT = 150;
+  ctx.strokeStyle = "#cbd5e1"; ctx.fillStyle = "#6b7280"; ctx.font = "11px sans-serif";
+  for (let t = 0; t <= 10; t++) {
+    const y = P.top + innerH - t/10 * innerH;
+    ctx.strokeStyle = "#eef2f7";
+    ctx.beginPath(); ctx.moveTo(P.left, y); ctx.lineTo(P.left + innerW, y); ctx.stroke();
+    ctx.fillStyle = "#6b7280"; ctx.fillText((t/10).toFixed(1), 22, y+4);
+  }
+  for (let k = 0; k <= 5; k++) {
+    const x = P.left + innerW * k / 5;
+    ctx.strokeStyle = "#eef2f7";
+    ctx.beginPath(); ctx.moveTo(x, P.top); ctx.lineTo(x, P.top+innerH); ctx.stroke();
+    ctx.fillStyle = "#6b7280"; ctx.fillText(`${Math.round(k*maxT/5)}mo`, x-14, P.top+innerH+14);
+  }
+  ctx.strokeStyle = "#111"; ctx.beginPath();
+  ctx.moveTo(P.left, P.top); ctx.lineTo(P.left, P.top+innerH);
+  ctx.lineTo(P.left+innerW, P.top+innerH); ctx.stroke();
+  ctx.save(); ctx.translate(16, P.top + innerH/2 + 50); ctx.rotate(-Math.PI/2);
+  ctx.fillStyle = "#111"; ctx.fillText("Survival probability", 0, 0); ctx.restore();
+  ctx.fillText("Time (months)", P.left + innerW/2 - 30, H - 12);
+
+  const colors = { OS:"#2563eb", RFS:"#059669", DMFS:"#d97706" };
+  let legendY = P.top + 8;
+  Object.entries(endpoints).forEach(([ep, v]) => {
+    if (v.error) return;
+    const p = v.prediction;
+    ctx.strokeStyle = colors[ep] || "#333"; ctx.lineWidth = 2;
+    ctx.beginPath();
+    p.times.forEach((t, i) => {
+      const x = P.left + Math.min(t, maxT) / maxT * innerW;
+      const y = P.top + innerH - p.survival[i] * innerH;
+      if (i === 0) ctx.moveTo(x, y); else ctx.lineTo(x, y);
+    });
+    ctx.stroke();
+    ctx.fillStyle = colors[ep];
+    ctx.fillRect(P.left + 10, legendY, 14, 10);
+    ctx.fillStyle = "#111";
+    ctx.fillText(`${ep} (test C = ${v.model_performance.test_c_index.toFixed(2)})`,
+                 P.left + 30, legendY + 9);
+    legendY += 16;
+  });
 }
 
 init();
