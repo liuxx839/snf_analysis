@@ -53,6 +53,7 @@ from survival import (  # noqa: E402
     VARIANTS as SURV_VARIANTS,
     cox_four_variants,
     cox_train_test,
+    predict_per_subtype,
     predict_survival_curve,
 )
 
@@ -610,21 +611,29 @@ def survival_predict(req: SurvivalPredictRequest):
     endpoints = req.endpoints or list(_surv_state.keys())
     wanted_variants = req.variants or [v["key"] for v in SURV_VARIANTS]
 
-    # 如果用户没显式指定 SNF_subtype, 用 Tab ① 分型模型来预测一下,
-    # 这样 '+ SNF' 的两个变体也能给出生存曲线。
     patient = dict(req.patient)
-    auto_snf = None
-    if not patient.get("SNF_subtype"):
-        try:
-            _default_train_if_needed()
-            pipe = _state["pipeline"]; feats = _state["features"]
-            X_new = _patient_to_row(patient, feats)
-            proba = pipe.predict_proba(X_new)[0]
-            labels = list(pipe.classes_)
-            auto_snf = labels[int(np.argmax(proba))]
+
+    # 用 Tab ① 分型模型计算 SNF 的概率分布, 供含 SNF 的变体:
+    #   - 4 条 per-subtype 曲线(SNF1/2/3/4 各一条假设曲线)
+    #   - 一条按概率加权的 expected 曲线
+    #   - argmax 作为点估计用于 base/treat 变体
+    snf_probs: Dict[str, float] | None = None
+    auto_snf: str | None = None
+    try:
+        _default_train_if_needed()
+        pipe = _state["pipeline"]; feats = _state["features"]
+        X_new = _patient_to_row(patient, feats)
+        proba = pipe.predict_proba(X_new)[0]
+        classes = list(pipe.classes_)
+        snf_probs = {c: float(proba[classes.index(c)]) if c in classes else 0.0
+                     for c in ["SNF1","SNF2","SNF3","SNF4"]}
+        if patient.get("SNF_subtype"):
+            auto_snf = patient["SNF_subtype"]
+        else:
+            auto_snf = max(snf_probs, key=snf_probs.get)
             patient["SNF_subtype"] = auto_snf
-        except Exception:
-            auto_snf = None
+    except Exception:
+        pass
 
     out = {}
     for ep in endpoints:
@@ -640,11 +649,22 @@ def survival_predict(req: SurvivalPredictRequest):
                     variant_preds[vk] = {"error": entry["error"], "meta": entry["meta"]}
                 continue
             try:
+                # 含 SNF 的变体额外给出 4 种 SNF 假设下的生存曲线
+                by_subtype = None
+                if entry["bundle"].get("with_snf"):
+                    try:
+                        by_subtype = predict_per_subtype(
+                            entry["bundle"], patient,
+                            subtype_probs=snf_probs,
+                        )
+                    except Exception as ee:
+                        by_subtype = {"error": str(ee)}
                 pred = predict_survival_curve(entry["bundle"], patient)
                 res = entry["result"]
                 variant_preds[vk] = {
                     "meta": entry["meta"],
                     "prediction": pred,
+                    "by_subtype": by_subtype,
                     "performance": {
                         "cv_c_index": res.cv_c_index,
                         "cv_c_index_ci": list(res.cv_c_index_ci),
@@ -666,6 +686,7 @@ def survival_predict(req: SurvivalPredictRequest):
         "variants_order": [v["key"] for v in SURV_VARIANTS],
         "variants_meta": {v["key"]: v for v in SURV_VARIANTS},
         "auto_predicted_snf": auto_snf,
+        "snf_probabilities": snf_probs,
         "endpoints": out,
     }
 

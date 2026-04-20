@@ -288,6 +288,62 @@ def cox_four_variants(
     return out
 
 
+def predict_per_subtype(
+    bundle: dict,
+    patient: dict,
+    subtype_labels: Optional[List[str]] = None,
+    subtype_probs: Optional[Dict[str, float]] = None,
+    times: Optional[List[float]] = None,
+) -> Dict[str, dict]:
+    """
+    把 patient 依次假设成 SNF1/2/3/4, 分别给出生存曲线。仅对含 SNF 的 Cox 模型有意义;
+    如果 bundle["with_snf"] 为 False 会抛错。
+
+    返回 {
+      "per_subtype": {"SNF1": {...prediction...}, ...},
+      "expected":   {...prediction weighted by subtype_probs...}   # 如果给了 probs
+      "subtype_labels": [...]
+    }
+    """
+    if not bundle.get("with_snf"):
+        raise ValueError("This bundle was trained without SNF; cannot vary subtype.")
+    if subtype_labels is None:
+        subtype_labels = ["SNF1", "SNF2", "SNF3", "SNF4"]
+
+    per = {}
+    weights_times = None
+    weights_surv_stack = []
+    w_list = []
+    for s in subtype_labels:
+        pt = dict(patient)
+        pt["SNF_subtype"] = s
+        pred = predict_survival_curve(bundle, pt, times=times)
+        per[s] = pred
+        if subtype_probs is not None:
+            w = float(subtype_probs.get(s, 0.0))
+            w_list.append(w)
+            weights_surv_stack.append(np.array(pred["survival"], dtype=float))
+            weights_times = pred["times"]
+
+    out: Dict[str, dict] = {"per_subtype": per, "subtype_labels": list(subtype_labels)}
+    if subtype_probs is not None and sum(w_list) > 0:
+        W = np.array(w_list)
+        W = W / W.sum()
+        S = np.stack(weights_surv_stack, axis=0)  # (4, T)
+        exp_surv = (S * W[:, None]).sum(axis=0)
+        out["expected"] = {
+            "times": weights_times,
+            "survival": [float(v) for v in exp_surv],
+            "subtype_probs": {s: float(p) for s, p in zip(subtype_labels, W.tolist())},
+            "milestones": {
+                "p_survive_24mo": float(np.interp(24,  weights_times, exp_surv)),
+                "p_survive_60mo": float(np.interp(60,  weights_times, exp_surv)),
+                "p_survive_120mo": float(np.interp(120, weights_times, exp_surv)),
+            },
+        }
+    return out
+
+
 def predict_survival_curve(
     bundle: dict,
     patient: dict,

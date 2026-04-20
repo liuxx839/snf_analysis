@@ -804,56 +804,87 @@ function renderSurvPerf(r) {
 function renderSurvPrediction(r) {
   SURV_LAST_PREDICT = r;
   document.getElementById("surv-plot-wrap").classList.remove("hidden");
-  const vorder = r.variants_order || ["base","treat","snf","snf+treat"];
-  const vmeta = r.variants_meta || {};
 
-  const colors = { "base":"#94a3b8", "treat":"#059669", "snf":"#2563eb", "snf+treat":"#dc2626" };
-  const picker = document.getElementById("surv-variant-picker");
-  picker.innerHTML = "";
-  vorder.forEach(vk => {
-    const lab = (vmeta[vk]||{}).label || vk;
-    const l = document.createElement("label");
-    l.innerHTML = `<input type="checkbox" data-variant="${vk}" ${SURV_SELECTED_VARIANTS.has(vk)?'checked':''}>
-      <span style="display:inline-block;width:10px;height:10px;background:${colors[vk]};border-radius:2px;margin-right:4px;vertical-align:middle"></span>
-      ${escapeHTML(lab)}`;
-    l.style.marginRight = "16px";
-    picker.appendChild(l);
-  });
-  picker.addEventListener("change", (e) => {
-    if (e.target && e.target.dataset.variant) {
-      const k = e.target.dataset.variant;
-      if (e.target.checked) SURV_SELECTED_VARIANTS.add(k);
-      else                  SURV_SELECTED_VARIANTS.delete(k);
-      drawSurvCurves(r, SURV_SELECTED_VARIANTS);
-      renderSurvMilestones(r, SURV_SELECTED_VARIANTS);
-    }
-  });
+  // 顶部:展示 Tab ① 预测的 SNF 概率分布
+  const probBox = document.getElementById("surv-snf-prob");
+  if (r.snf_probabilities) {
+    const parts = Object.entries(r.snf_probabilities)
+      .map(([s, p]) => `${s}=${(p*100).toFixed(0)}%`).join(" · ");
+    probBox.innerHTML = `Tab ① 预测的 SNF 概率: <b>${parts}</b>` +
+      (r.auto_predicted_snf ? ` &nbsp;|&nbsp; argmax = ${r.auto_predicted_snf}` : "");
+  } else {
+    probBox.textContent = "";
+  }
 
-  drawSurvCurves(r, SURV_SELECTED_VARIANTS);
-  renderSurvMilestones(r, SURV_SELECTED_VARIANTS);
+  // 绑定视图切换
+  const modeSel = document.getElementById("surv-view-mode");
+  const varSel = document.getElementById("surv-view-variant");
+  modeSel.onchange = () => redrawSurvPrediction(r);
+  varSel.onchange = () => redrawSurvPrediction(r);
 
-  // 系数(用默认变体)
+  redrawSurvPrediction(r);
+
+  // 系数表(用默认变体 snf+treat)
   const coefBox = document.getElementById("surv-coef");
+  const vmeta = r.variants_meta || {};
   const defaultVk = r.default_variant || "snf+treat";
   const firstOk = Object.entries(r.endpoints).find(([_, v]) => v.variants[defaultVk] && !v.variants[defaultVk].error);
   if (firstOk) {
     const [ep, v] = firstOk;
     const vv = v.variants[defaultVk];
     const lab = (vmeta[defaultVk]||{}).label || defaultVk;
-    let head = `<b>${ep} × ${escapeHTML(lab)}</b> 的 Top 8 特征 (按 p 排序, HR > 1 = 风险增加):<br>`;
-    if (r.auto_predicted_snf)
-      head += `<span class="badge medium">Tab ① 分型模型自动预测 SNF_subtype = ${r.auto_predicted_snf},用于含 SNF 的变体</span><br>`;
-    coefBox.innerHTML = head + vv.top_coefficients.map(c =>
-      `<code>${c.feature}</code>: HR = ${c.hazard_ratio.toFixed(2)}, p = ${c.p.toExponential(2)}`
-    ).join(" &nbsp;|&nbsp; ");
+    coefBox.innerHTML = `<b>${ep} × ${escapeHTML(lab)}</b> Top 8 特征 (HR > 1 = 风险增加):<br>`
+      + vv.top_coefficients.map(c =>
+          `<code>${c.feature}</code>: HR = ${c.hazard_ratio.toFixed(2)}, p = ${c.p.toExponential(2)}`
+        ).join(" &nbsp;|&nbsp; ");
   }
 }
 
-function renderSurvMilestones(r, selected) {
+function redrawSurvPrediction(r) {
+  const mode = document.getElementById("surv-view-mode").value;
+  const picker = document.getElementById("surv-variant-picker");
+  if (mode === "byvariant") {
+    // 旧版:按变体对比
+    const vorder = r.variants_order || ["base","treat","snf","snf+treat"];
+    const vmeta = r.variants_meta || {};
+    const colors = { "base":"#94a3b8", "treat":"#059669", "snf":"#2563eb", "snf+treat":"#dc2626" };
+    picker.innerHTML = "";
+    vorder.forEach(vk => {
+      const lab = (vmeta[vk]||{}).label || vk;
+      const l = document.createElement("label");
+      l.innerHTML = `<input type="checkbox" data-variant="${vk}" ${SURV_SELECTED_VARIANTS.has(vk)?'checked':''}>
+        <span style="display:inline-block;width:10px;height:10px;background:${colors[vk]};border-radius:2px;margin-right:4px;vertical-align:middle"></span>
+        ${escapeHTML(lab)}`;
+      l.style.marginRight = "16px";
+      picker.appendChild(l);
+    });
+    picker.onchange = (e) => {
+      if (e.target && e.target.dataset.variant) {
+        const k = e.target.dataset.variant;
+        if (e.target.checked) SURV_SELECTED_VARIANTS.add(k); else SURV_SELECTED_VARIANTS.delete(k);
+        drawSurvByVariant(r, SURV_SELECTED_VARIANTS);
+        renderSurvMilestonesByVariant(r, SURV_SELECTED_VARIANTS);
+      }
+    };
+    drawSurvByVariant(r, SURV_SELECTED_VARIANTS);
+    renderSurvMilestonesByVariant(r, SURV_SELECTED_VARIANTS);
+  } else {
+    // 新版:按 SNF 分型对比(默认)
+    picker.innerHTML = `<span class="hint">
+      把你的病人依次假设成 SNF1/SNF2/SNF3/SNF4 分别跑同一个 Cox 模型, 4 条曲线直接比较"如果我是这个亚型预后会怎样"。
+      虚线 "Expected" = 按 Tab ① 预测的 SNF 概率加权平均。
+    </span>`;
+    picker.onchange = null;
+    drawSurvBySubtype(r);
+    renderSurvMilestonesBySubtype(r);
+  }
+}
+
+function renderSurvMilestonesByVariant(r, selected) {
   const vorder = r.variants_order || ["base","treat","snf","snf+treat"];
   const vmeta = r.variants_meta || {};
   const msBox = document.getElementById("surv-milestones");
-  let html = `<h3>关键时间点生存概率</h3><table class="data"><thead><tr>
+  let html = `<h3>关键时间点生存概率 (按变体)</h3><table class="data"><thead><tr>
     <th>端点</th><th>变体</th><th>Partial HR</th>
     <th>2 年</th><th>5 年</th><th>10 年</th>
     <th>Test C-index</th>
@@ -881,7 +912,148 @@ function renderSurvMilestones(r, selected) {
   msBox.innerHTML = html;
 }
 
-function drawSurvCurves(r, selected) {
+function renderSurvMilestonesBySubtype(r) {
+  const vk = document.getElementById("surv-view-variant").value;
+  const msBox = document.getElementById("surv-milestones");
+  const probs = r.snf_probabilities || {};
+  let html = `<h3>关键时间点生存概率 (把病人假设为不同 SNF 亚型 | Cox 模型: ${vk})</h3>
+    <table class="data"><thead><tr>
+      <th>端点</th><th>亚型假设</th><th>Tab ① 概率</th><th>Partial HR</th>
+      <th>2 年</th><th>5 年</th><th>10 年</th><th>Test C-index</th>
+    </tr></thead><tbody>`;
+  Object.entries(r.endpoints).forEach(([ep, epData]) => {
+    const v = epData.variants[vk];
+    if (!v || v.error || !v.by_subtype || v.by_subtype.error) {
+      html += `<tr><td>${ep}</td><td colspan="7" style="color:#b91c1c">该变体不支持 SNF 切换</td></tr>`;
+      return;
+    }
+    const labels = v.by_subtype.subtype_labels;
+    labels.forEach(s => {
+      const pred = v.by_subtype.per_subtype[s];
+      const hr = pred.partial_hazard;
+      const hrTag = hr < 0.85 ? "color:#166534" : (hr > 1.15 ? "color:#b91c1c" : "");
+      const prob = probs[s];
+      html += `<tr>
+        <td><b>${ep}</b></td>
+        <td><b>${s}</b></td>
+        <td>${prob != null ? (prob*100).toFixed(0)+'%' : '-'}</td>
+        <td style="${hrTag}">${hr.toFixed(2)}</td>
+        <td>${(pred.milestones.p_survive_24mo*100).toFixed(1)}%</td>
+        <td>${(pred.milestones.p_survive_60mo*100).toFixed(1)}%</td>
+        <td>${(pred.milestones.p_survive_120mo*100).toFixed(1)}%</td>
+        <td>${v.performance.test_c_index.toFixed(3)}</td>
+      </tr>`;
+    });
+    if (v.by_subtype.expected) {
+      const exp = v.by_subtype.expected;
+      html += `<tr style="background:#f8fafc;font-style:italic">
+        <td><b>${ep}</b></td>
+        <td><b>Expected</b><br><small>(按概率加权)</small></td>
+        <td>—</td><td>—</td>
+        <td>${(exp.milestones.p_survive_24mo*100).toFixed(1)}%</td>
+        <td>${(exp.milestones.p_survive_60mo*100).toFixed(1)}%</td>
+        <td>${(exp.milestones.p_survive_120mo*100).toFixed(1)}%</td>
+        <td>—</td>
+      </tr>`;
+    }
+  });
+  html += "</tbody></table>";
+  msBox.innerHTML = html;
+}
+
+function drawSurvBySubtype(r) {
+  const canvas = document.getElementById("surv-canvas");
+  const ctx = canvas.getContext("2d");
+  const W = canvas.width, H = canvas.height;
+  ctx.clearRect(0, 0, W, H);
+  const endpoints = Object.keys(r.endpoints);
+  const vk = document.getElementById("surv-view-variant").value;
+  const subtypeColors = { SNF1:"#2563eb", SNF2:"#059669", SNF3:"#d97706", SNF4:"#dc2626" };
+  const maxT = 150;
+
+  const nEp = endpoints.length, gap = 24;
+  const subW = (W - gap * (nEp + 1)) / nEp;
+  const subH = H - 76;
+
+  endpoints.forEach((ep, ei) => {
+    const ox = gap + ei * (subW + gap), oy = 30;
+    ctx.fillStyle = "#111"; ctx.font = "12px sans-serif";
+    ctx.fillText(`${ep} · ${r.endpoints[ep].label || ""}`, ox, oy - 10);
+
+    // 网格 + 坐标
+    for (let k = 0; k <= 10; k++) {
+      const y = oy + subH - k/10 * subH;
+      ctx.strokeStyle = "#eef2f7";
+      ctx.beginPath(); ctx.moveTo(ox, y); ctx.lineTo(ox + subW, y); ctx.stroke();
+    }
+    ctx.strokeStyle = "#111"; ctx.beginPath();
+    ctx.moveTo(ox, oy); ctx.lineTo(ox, oy + subH);
+    ctx.lineTo(ox + subW, oy + subH); ctx.stroke();
+    ctx.fillStyle = "#6b7280";
+    for (let k = 0; k <= 5; k++) {
+      const x = ox + subW * k / 5;
+      ctx.fillText(`${Math.round(k*maxT/5)}`, x - 6, oy + subH + 12);
+      const y = oy + subH - k/5 * subH;
+      ctx.fillText((k/5).toFixed(1), ox - 28, y + 4);
+    }
+    ctx.fillText("mo", ox + subW - 18, oy + subH + 26);
+
+    const v = r.endpoints[ep].variants[vk];
+    if (!v || v.error || !v.by_subtype || v.by_subtype.error) {
+      ctx.fillStyle = "#b91c1c";
+      ctx.fillText("此变体不支持 SNF 切换", ox + 8, oy + 20);
+      return;
+    }
+    const bys = v.by_subtype;
+    bys.subtype_labels.forEach(s => {
+      const pred = bys.per_subtype[s];
+      ctx.strokeStyle = subtypeColors[s] || "#333";
+      ctx.lineWidth = 2.2;
+      ctx.beginPath();
+      pred.times.forEach((t, i) => {
+        const x = ox + Math.min(t, maxT) / maxT * subW;
+        const y = oy + subH - pred.survival[i] * subH;
+        if (i === 0) ctx.moveTo(x, y); else ctx.lineTo(x, y);
+      });
+      ctx.stroke();
+    });
+    // expected 虚线
+    if (bys.expected) {
+      ctx.strokeStyle = "#1f2937"; ctx.lineWidth = 2.2;
+      ctx.setLineDash([5, 4]);
+      ctx.beginPath();
+      bys.expected.times.forEach((t, i) => {
+        const x = ox + Math.min(t, maxT) / maxT * subW;
+        const y = oy + subH - bys.expected.survival[i] * subH;
+        if (i === 0) ctx.moveTo(x, y); else ctx.lineTo(x, y);
+      });
+      ctx.stroke();
+      ctx.setLineDash([]);
+    }
+  });
+
+  // 底部图例
+  let lx = gap; const ly = H - 16;
+  ctx.font = "11px sans-serif";
+  ["SNF1","SNF2","SNF3","SNF4"].forEach(s => {
+    ctx.fillStyle = subtypeColors[s];
+    ctx.fillRect(lx, ly - 8, 14, 10);
+    ctx.fillStyle = "#111";
+    const prob = (r.snf_probabilities || {})[s];
+    const tag = prob != null ? `${s} (p=${(prob*100).toFixed(0)}%)` : s;
+    ctx.fillText(tag, lx + 18, ly);
+    lx += ctx.measureText(tag).width + 32;
+  });
+  // Expected 图例
+  ctx.strokeStyle = "#1f2937"; ctx.lineWidth = 2.2;
+  ctx.setLineDash([5, 4]);
+  ctx.beginPath(); ctx.moveTo(lx, ly - 3); ctx.lineTo(lx + 18, ly - 3); ctx.stroke();
+  ctx.setLineDash([]);
+  ctx.fillStyle = "#111";
+  ctx.fillText("Expected (按概率加权)", lx + 22, ly);
+}
+
+function drawSurvByVariant(r, selected) {
   const canvas = document.getElementById("surv-canvas");
   const ctx = canvas.getContext("2d");
   const W = canvas.width, H = canvas.height;

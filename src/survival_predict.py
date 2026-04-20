@@ -22,17 +22,20 @@ ROOT = Path(__file__).resolve().parent
 sys.path.insert(0, str(ROOT))
 
 from data_loader import load_table_s1, build_feature_frame
-from survival import SURV_ENDPOINTS, VARIANTS, cox_four_variants, predict_survival_curve
+from survival import (
+    SURV_ENDPOINTS, VARIANTS,
+    cox_four_variants, predict_per_subtype, predict_survival_curve,
+)
 
 OUT_DIR = ROOT.parent / "outputs"
 OUT_DIR.mkdir(exist_ok=True)
 
 
 def _predict_snf(patient: dict):
-    """尝试用已保存的 SNF 分型模型给病人打一个预测标签, 用于带 SNF 的变体。"""
+    """用已保存的分型模型给病人一个 argmax SNF 和完整的概率向量。"""
     pkl = OUT_DIR / "snf_classifier.pkl"
     if not pkl.exists():
-        return None
+        return None, None
     try:
         import pickle
         with open(pkl, "rb") as f:
@@ -43,12 +46,14 @@ def _predict_snf(patient: dict):
         X = patient_to_row(patient, features)
         proba = pipe.predict_proba(X)[0]
         classes = list(pipe.classes_)
-        return classes[int(np.argmax(proba))]
+        prob_map = {c: float(proba[classes.index(c)]) if c in classes else 0.0
+                    for c in ["SNF1","SNF2","SNF3","SNF4"]}
+        return classes[int(np.argmax(proba))], prob_map
     except Exception:
-        return None
+        return None, None
 
 
-def _plot_personal(endpoint_results, save_path, selected_variants):
+def _plot_by_variant(endpoint_results, save_path, selected_variants):
     import matplotlib.pyplot as plt
     endpoints = list(endpoint_results.keys())
     fig, axes = plt.subplots(1, len(endpoints), figsize=(5.0 * len(endpoints), 4.2), sharey=True)
@@ -70,6 +75,32 @@ def _plot_personal(endpoint_results, save_path, selected_variants):
     plt.close()
 
 
+def _plot_by_subtype(subtype_curves, save_path, variant_key="snf+treat"):
+    """每个端点一张子图, 叠加 SNF1-4 + Expected 5 条曲线。"""
+    import matplotlib.pyplot as plt
+    endpoints = [ep for ep, vmap in subtype_curves.items()
+                 if variant_key in vmap and "per_subtype" in vmap[variant_key]]
+    if not endpoints: return
+    fig, axes = plt.subplots(1, len(endpoints), figsize=(5.0 * len(endpoints), 4.2), sharey=True)
+    if len(endpoints) == 1: axes = [axes]
+    colors = {"SNF1":"#2563eb", "SNF2":"#059669", "SNF3":"#d97706", "SNF4":"#dc2626"}
+    for ax, ep in zip(axes, endpoints):
+        by = subtype_curves[ep][variant_key]
+        for s in by["subtype_labels"]:
+            p = by["per_subtype"][s]
+            ax.plot(p["times"], p["survival"], color=colors.get(s, "gray"), lw=2, label=s)
+        if "expected" in by:
+            ax.plot(by["expected"]["times"], by["expected"]["survival"],
+                    color="#1f2937", lw=2, ls="--", label="Expected")
+        ax.set_title(f"{ep}  ·  Cox = {variant_key}")
+        ax.set_xlabel("Months"); ax.set_ylim(0, 1.02); ax.grid(alpha=0.3)
+        ax.legend(loc="lower left", fontsize=8)
+    axes[0].set_ylabel("Survival probability")
+    plt.tight_layout()
+    plt.savefig(save_path, dpi=150)
+    plt.close()
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--patient", default="patient_template.yaml")
@@ -83,11 +114,13 @@ def main():
         patient = yaml.safe_load(f)
     pid = patient.get("patient_id", "ME")
 
-    if not patient.get("SNF_subtype"):
-        auto = _predict_snf(patient)
-        if auto is not None:
+    auto, snf_probs = _predict_snf(patient)
+    if auto is not None:
+        if not patient.get("SNF_subtype"):
             patient["SNF_subtype"] = auto
-            print(f"(Tab ① 模型自动预测 SNF_subtype = {auto}, 用于含 SNF 的变体)")
+        if snf_probs is not None:
+            parts = " | ".join(f"{s}={(p*100):.0f}%" for s, p in snf_probs.items())
+            print(f"Tab ① 分型模型: argmax = {auto}; 概率 {parts}")
 
     raw = load_table_s1(); df = build_feature_frame(raw)
 
@@ -99,10 +132,12 @@ def main():
     rows = []
     selected = [args.only_variant] if args.only_variant else [v["key"] for v in VARIANTS]
 
+    subtype_curves = {}  # ep -> vk -> {SNF1: pred, SNF2: pred, ..., expected: pred}
     for ep in SURV_ENDPOINTS.keys():
         variants = cox_four_variants(df, endpoint=ep, n_splits=args.n_splits,
                                      penalizer=args.penalizer)
         endpoint_results[ep] = {}
+        subtype_curves[ep] = {}
         for vk in selected:
             v = variants.get(vk)
             if v is None or "error" in v:
@@ -123,6 +158,13 @@ def main():
                 "p_5y":  pred["milestones"]["p_survive_60mo"],
                 "p_10y": pred["milestones"]["p_survive_120mo"],
             })
+            # 对含 SNF 的变体, 额外跑 4 种 SNF 假设
+            if v["bundle"].get("with_snf"):
+                try:
+                    by = predict_per_subtype(v["bundle"], patient, subtype_probs=snf_probs)
+                    subtype_curves[ep][vk] = by
+                except Exception as e:
+                    subtype_curves[ep][vk] = {"error": str(e)}
 
     df_out = pd.DataFrame(rows).round(3)
 
@@ -135,11 +177,33 @@ def main():
                       "partial_hazard","p_2y","p_5y","p_10y"]]
         print(disp.to_string(index=False))
 
+        # SNF 亚型对比
+        vk_with_snf = [k for k in selected if k in subtype_curves.get(ep, {}) and "per_subtype" in subtype_curves[ep][k]]
+        if vk_with_snf:
+            vk = "snf+treat" if "snf+treat" in vk_with_snf else vk_with_snf[0]
+            by = subtype_curves[ep][vk]
+            print(f"\n  把病人假设成不同 SNF 亚型 (Cox 模型: {vk}):")
+            print(f"  {'Subtype':<10}{'P(2y)':>10}{'P(5y)':>10}{'P(10y)':>10}{'HR':>8}")
+            for s in by["subtype_labels"]:
+                p = by["per_subtype"][s]
+                m = p["milestones"]
+                print(f"  {s:<10}{m['p_survive_24mo']*100:>9.1f}%{m['p_survive_60mo']*100:>9.1f}%{m['p_survive_120mo']*100:>9.1f}%{p['partial_hazard']:>8.2f}")
+            if "expected" in by:
+                m = by["expected"]["milestones"]
+                print(f"  {'Expected':<10}{m['p_survive_24mo']*100:>9.1f}%{m['p_survive_60mo']*100:>9.1f}%{m['p_survive_120mo']*100:>9.1f}%{'--':>8}")
+
     df_out.to_csv(OUT_DIR / f"survival_report_{pid}.csv", index=False)
     with open(OUT_DIR / f"survival_prediction_{pid}.json", "w", encoding="utf-8") as f:
         json.dump({
             "patient_id": pid,
             "auto_snf_subtype": patient.get("SNF_subtype"),
+            "snf_probabilities": snf_probs,
+            "by_subtype": {
+                ep: {
+                    vk: by for vk, by in vmap.items()
+                    if "per_subtype" in by or "error" in by
+                } for ep, vmap in subtype_curves.items() if vmap
+            },
             "endpoints": {
                 ep: {
                     vk: (
@@ -165,14 +229,17 @@ def main():
             },
         }, f, indent=2, ensure_ascii=False, default=float)
 
-    _plot_personal(endpoint_results, OUT_DIR / f"survival_curve_{pid}.png",
-                   selected_variants=selected)
+    _plot_by_variant(endpoint_results, OUT_DIR / f"survival_curve_{pid}.png",
+                     selected_variants=selected)
+    _plot_by_subtype(subtype_curves, OUT_DIR / f"survival_curve_{pid}_bySNF.png",
+                     variant_key="snf+treat" if "snf+treat" in selected else "snf")
 
     print()
     print("已保存:")
     print(" -", OUT_DIR / f"survival_report_{pid}.csv")
     print(" -", OUT_DIR / f"survival_prediction_{pid}.json")
-    print(" -", OUT_DIR / f"survival_curve_{pid}.png")
+    print(" -", OUT_DIR / f"survival_curve_{pid}.png      (按变体)")
+    print(" -", OUT_DIR / f"survival_curve_{pid}_bySNF.png (按 SNF 亚型假设)")
 
 
 if __name__ == "__main__":

@@ -169,10 +169,25 @@
       </div>
 
       <div id="surv-plot-wrap" class="hidden">
-        <h3>个人生存曲线 —— 选择要显示的变体</h3>
+        <h3>你的个人生存曲线</h3>
+        <div class="row">
+          <label>视图:
+            <select id="surv-view-mode">
+              <option value="bysubtype" selected>按 SNF 分型对比(SNF1/2/3/4 各一条)</option>
+              <option value="byvariant">按变体对比(base/treat/snf/snf+treat)</option>
+            </select>
+          </label>
+          <label>使用哪个 Cox 模型:
+            <select id="surv-view-variant">
+              <option value="snf+treat" selected>+ SNF + Adjuvant therapy</option>
+              <option value="snf">+ SNF subtype (no treatment)</option>
+            </select>
+          </label>
+          <span id="surv-snf-prob" class="stat"></span>
+        </div>
         <div class="row" id="surv-variant-picker"></div>
         <div class="canvas-wrap">
-          <canvas id="surv-canvas" width="760" height="440"></canvas>
+          <canvas id="surv-canvas" width="900" height="440"></canvas>
         </div>
         <div id="surv-milestones"></div>
         <div id="surv-coef" class="hint"></div>
