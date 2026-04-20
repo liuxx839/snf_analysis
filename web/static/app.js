@@ -41,8 +41,30 @@ async function init() {
   fbox.innerHTML = "";
   META.features.forEach(f => {
     const wrap = document.createElement("label");
-    wrap.innerHTML = `<input type="checkbox" data-feature="${f}" checked> ${f}`;
+    const isTreatment = (META.treatment_features || []).includes(f);
+    const checked = isTreatment ? "" : "checked";
+    const desc = META.feature_description ? META.feature_description[f] : "";
+    const tag = isTreatment ? ' <span class="badge medium" style="font-size:10px">治疗端·术前不可用</span>' : "";
+    wrap.innerHTML = `<input type="checkbox" data-feature="${f}" ${checked}> ${f}${tag}`;
+    wrap.title = desc || f;
     fbox.appendChild(wrap);
+  });
+
+  const modelSelect = document.getElementById("train-model");
+  modelSelect.innerHTML = "";
+  (META.available_models || []).forEach(m => {
+    const o = document.createElement("option");
+    o.value = m; o.textContent = m;
+    if (m === "RandomForest") o.selected = true;
+    modelSelect.appendChild(o);
+  });
+
+  const cmpBox = document.getElementById("compare-models-box");
+  cmpBox.innerHTML = "";
+  (META.available_models || []).forEach(m => {
+    const l = document.createElement("label");
+    l.innerHTML = `<input type="checkbox" data-cmp-model="${m}" checked> ${m}`;
+    cmpBox.appendChild(l);
   });
 
   const savedDefault = localStorage.getItem("snf_patient_default");
@@ -57,8 +79,19 @@ function buildField(name) {
   const wrap = document.createElement("div");
   wrap.className = "field";
   const lab = document.createElement("label");
-  lab.textContent = name;
+  const desc = META.feature_description ? META.feature_description[name] : "";
+  const isTreatment = (META.treatment_features || []).includes(name);
+  lab.innerHTML = isTreatment
+    ? `${name} <span class="badge medium" style="font-size:10px">治疗端</span>`
+    : name;
+  if (desc) lab.title = desc;
   wrap.appendChild(lab);
+  if (desc) {
+    const h = document.createElement("small");
+    h.textContent = desc;
+    h.style.color = "var(--muted)";
+    wrap.appendChild(h);
+  }
 
   if (meta.type === "numeric") {
     const inp = document.createElement("input");
@@ -247,7 +280,12 @@ function renderPrediction(r) {
     bars.appendChild(row);
   });
 
-  document.getElementById("interpretation").textContent = r.interpretation;
+  let interp = r.interpretation;
+  const isBagging = ["RandomForest","ExtraTrees"].includes(r.model_name);
+  if (!isBagging) {
+    interp += ` 注:当前算法为 ${r.model_name},没有"树集成方差"这种天然的预测不确定度,CI 退化为点估计(没有区间宽度);AUC 的 CI 仍由 bootstrap 给出(见 Tab ④)。`;
+  }
+  document.getElementById("interpretation").textContent = interp;
 
   const descBox = document.getElementById("subtype-desc");
   descBox.innerHTML = "";
@@ -258,11 +296,12 @@ function renderPrediction(r) {
   });
 
   let info = "";
+  const algo = r.model_name ? ` [${r.model_name}]` : "";
   if (r.model_performance) {
     const m = r.model_performance;
-    info = `当前预测用的模型: N=${m.n_samples},Macro AUC = ${m.macro_auc.toFixed(3)} [${m.macro_auc_ci[0].toFixed(3)}, ${m.macro_auc_ci[1].toFixed(3)}]。`;
+    info = `当前预测用的模型${algo}: N=${m.n_samples},Macro AUC = ${m.macro_auc.toFixed(3)} [${m.macro_auc_ci[0].toFixed(3)}, ${m.macro_auc_ci[1].toFixed(3)}]。`;
   } else {
-    info = "当前使用默认全队列模型。到 Tab ② 训练自定义模型后,预测会切换到新模型。";
+    info = `当前使用默认全队列模型${algo}。到 Tab ② 训练,或 Tab ③ 大比拼自动选最佳。`;
   }
   if (Object.keys(r.filters_applied || {}).length) {
     info += "  子人群条件: " + JSON.stringify(r.filters_applied);
@@ -278,6 +317,7 @@ document.getElementById("btn-train").addEventListener("click", async () => {
     n_splits: parseInt(document.getElementById("n-splits").value),
     n_boot: parseInt(document.getElementById("n-boot").value),
     n_estimators: parseInt(document.getElementById("n-estimators").value),
+    model_name: document.getElementById("train-model").value,
   };
   const btn = document.getElementById("btn-train");
   btn.disabled = true; btn.textContent = "训练中,请稍候...";
@@ -308,7 +348,7 @@ async function renderTrainResult(r) {
   const classCounts = Object.entries(r.class_counts).map(([k,v]) => `${k}=${v}`).join(", ");
   const filtStr = Object.keys(r.filters_applied||{}).length ? JSON.stringify(r.filters_applied) : "(全队列)";
   document.getElementById("cv-summary").innerHTML = `
-    <p>训练样本 N = <b>${r.n_samples}</b> (${classCounts})</p>
+    <p>算法: <b>${r.model_name || "RandomForest"}</b> &nbsp;·&nbsp; 训练样本 N = <b>${r.n_samples}</b> (${classCounts})</p>
     <p>子人群条件: <code>${escapeHTML(filtStr)}</code></p>
     <p>使用特征: <code>${r.features_used.join(", ")}</code></p>
     <p>Macro AUC = <b>${r.macro_auc.toFixed(3)}</b>
@@ -372,14 +412,18 @@ async function renderTrainResult(r) {
   document.getElementById("cm-table").innerHTML = html;
 
   const fi = r.feature_importance_top15;
-  const maxImp = fi[0]?.importance || 1;
-  document.getElementById("feat-imp").innerHTML = fi.map(f => `
-    <div class="imp-bar">
-      <div><code>${f.name}</code></div>
-      <div class="track"><div class="fill" style="width:${(100*f.importance/maxImp).toFixed(1)}%"></div></div>
-    </div>
-    <div style="font-size:11px; color:var(--muted); margin-left:4px; margin-bottom:3px;">imp = ${f.importance.toFixed(4)}</div>
-  `).join("");
+  if (!fi || fi.length === 0) {
+    document.getElementById("feat-imp").innerHTML = `<p class="hint">该算法没有原生的特征重要性 / 系数可直接取用。</p>`;
+  } else {
+    const maxImp = fi[0].importance || 1;
+    document.getElementById("feat-imp").innerHTML = fi.map(f => `
+      <div class="imp-bar">
+        <div><code>${f.name}</code></div>
+        <div class="track"><div class="fill" style="width:${(100*f.importance/maxImp).toFixed(1)}%"></div></div>
+      </div>
+      <div style="font-size:11px; color:var(--muted); margin-left:4px; margin-bottom:3px;">imp = ${f.importance.toFixed(4)}</div>
+    `).join("");
+  }
 
   document.getElementById("classification-report").textContent = r.classification_report;
 }
@@ -449,6 +493,157 @@ function drawROC(r, bench) {
     ctx.fillText(`${name}: macro ≈ ${macro.toFixed(2)}`, W-P-160, ly);
     ly += 14;
   });
+}
+
+// ---------- compare ----------
+document.getElementById("btn-compare").addEventListener("click", async () => {
+  const selModels = [...document.querySelectorAll("[data-cmp-model]:checked")]
+    .map(cb => cb.dataset.cmpModel);
+  if (!selModels.length) { alert("至少勾选一个模型"); return; }
+  const payload = {
+    features: collectFeatures(),
+    filters: collectFilters(),
+    model_names: selModels,
+    n_splits: parseInt(document.getElementById("cmp-splits").value),
+    n_boot: parseInt(document.getElementById("cmp-boot").value),
+    n_estimators: parseInt(document.getElementById("cmp-trees").value),
+    auto_select: document.getElementById("compare-auto").checked,
+  };
+  const btn = document.getElementById("btn-compare");
+  const status = document.getElementById("compare-status");
+  btn.disabled = true; btn.textContent = `跑 ${selModels.length} 个模型中...`;
+  status.textContent = "可能需要 20-60 秒。";
+  try {
+    const r = await fetchJSON("/api/compare", {
+      method: "POST", headers: {"content-type": "application/json"},
+      body: JSON.stringify(payload),
+    });
+    renderCompare(r);
+    if (r.auto_selected_as_current) {
+      status.textContent = `完成。当前 Tab ①④ 已切换为最佳模型: ${r.best_model}。`;
+    } else {
+      status.textContent = `完成。`;
+    }
+  } catch (e) {
+    alert("比较失败: " + e.message);
+    status.textContent = "";
+  } finally {
+    btn.disabled = false; btn.textContent = "开始比较";
+  }
+});
+
+function renderCompare(r) {
+  document.getElementById("compare-result").classList.remove("hidden");
+
+  const rows = r.results;
+  let html = `<table class="data"><thead><tr>
+    <th>#</th><th>模型</th><th>Macro AUC</th><th>95% CI</th>
+    <th>SNF1</th><th>SNF2</th><th>SNF3</th><th>SNF4</th>
+    <th>N</th><th>耗时 (s)</th><th>状态</th>
+  </tr></thead><tbody>`;
+  rows.forEach((r, i) => {
+    const isBest = (r.name === r && false) || i === 0 && r.fit_ok;
+    if (!r.fit_ok) {
+      html += `<tr><td>${i+1}</td><td>${r.name}</td><td colspan="8" style="color:#b91c1c">${escapeHTML(r.error || "FAILED")}</td><td>✗</td></tr>`;
+      return;
+    }
+    const ci = `[${r.macro_auc_ci[0].toFixed(2)}, ${r.macro_auc_ci[1].toFixed(2)}]`;
+    const cells = ["SNF1","SNF2","SNF3","SNF4"].map(c => {
+      const a = r.per_class_auc[c];
+      if (a == null) return "<td>-</td>";
+      const cc = r.per_class_auc_ci[c];
+      return `<td title="95% CI ${cc[0].toFixed(2)}–${cc[1].toFixed(2)}">${a.toFixed(2)}</td>`;
+    }).join("");
+    html += `<tr${i===0?' style="background:#eff6ff;font-weight:600"':''}>
+       <td>${i+1}</td>
+       <td>${r.name}${i===0?' 👑':''}</td>
+       <td>${r.macro_auc.toFixed(3)}</td>
+       <td>${ci}</td>
+       ${cells}
+       <td>${r.n_samples}</td>
+       <td>${r.seconds}</td>
+       <td>✓</td>
+    </tr>`;
+  });
+  html += "</tbody></table>";
+  document.getElementById("compare-table").innerHTML = html;
+
+  drawCompareBars(rows, r.paper_benchmarks);
+}
+
+function drawCompareBars(rows, paper) {
+  const canvas = document.getElementById("cmp-canvas");
+  const ctx = canvas.getContext("2d");
+  const W = canvas.width, H = canvas.height;
+  ctx.clearRect(0, 0, W, H);
+  const P = { top: 30, right: 20, bottom: 110, left: 58 };
+  const okRows = rows.filter(r => r.fit_ok);
+
+  const paperRows = Object.entries(paper).map(([name, d]) => {
+    const vals = Object.values(d);
+    const macro = vals.reduce((a,b)=>a+b,0) / vals.length;
+    return { name: name + " (paper)", macro_auc: macro, macro_auc_ci: [macro, macro],
+             is_paper: true };
+  });
+  const allRows = [...okRows, ...paperRows];
+
+  const n = allRows.length;
+  const innerW = W - P.left - P.right;
+  const innerH = H - P.top - P.bottom;
+  const barW = innerW / n * 0.72;
+  const gap  = innerW / n * 0.28;
+
+  ctx.strokeStyle = "#94a3b8"; ctx.fillStyle = "#6b7280"; ctx.font = "11px sans-serif";
+  for (let t = 0; t <= 10; t++) {
+    const y = P.top + innerH - t/10 * innerH;
+    ctx.strokeStyle = "#eef2f7";
+    ctx.beginPath(); ctx.moveTo(P.left, y); ctx.lineTo(P.left + innerW, y); ctx.stroke();
+    ctx.fillStyle = "#6b7280";
+    ctx.fillText((t/10).toFixed(1), 8, y+4);
+  }
+  ctx.strokeStyle = "#111"; ctx.beginPath();
+  ctx.moveTo(P.left, P.top); ctx.lineTo(P.left, P.top + innerH);
+  ctx.lineTo(P.left + innerW, P.top + innerH); ctx.stroke();
+
+  ctx.save(); ctx.translate(14, P.top + innerH/2 + 40); ctx.rotate(-Math.PI/2);
+  ctx.fillStyle = "#1f2937"; ctx.fillText("Macro AUC", 0, 0); ctx.restore();
+
+  allRows.forEach((r, i) => {
+    const x = P.left + (innerW / n) * i + gap/2;
+    const y = P.top + innerH - r.macro_auc * innerH;
+    const h = r.macro_auc * innerH;
+    const color = r.is_paper
+      ? (r.name.includes("CNN") ? "#fbbf24" : "#34d399")
+      : (i === 0 ? "#2563eb" : "#93c5fd");
+    ctx.fillStyle = color;
+    ctx.fillRect(x, y, barW, h);
+
+    if (!r.is_paper && r.macro_auc_ci) {
+      const yLo = P.top + innerH - r.macro_auc_ci[0] * innerH;
+      const yHi = P.top + innerH - r.macro_auc_ci[1] * innerH;
+      const cx = x + barW/2;
+      ctx.strokeStyle = "#1f2937"; ctx.lineWidth = 1.2;
+      ctx.beginPath();
+      ctx.moveTo(cx, yLo); ctx.lineTo(cx, yHi);
+      ctx.moveTo(cx-5, yLo); ctx.lineTo(cx+5, yLo);
+      ctx.moveTo(cx-5, yHi); ctx.lineTo(cx+5, yHi);
+      ctx.stroke();
+    }
+
+    ctx.save();
+    ctx.translate(x + barW/2, P.top + innerH + 6);
+    ctx.rotate(Math.PI/3);
+    ctx.fillStyle = "#111";
+    ctx.font = "11px sans-serif";
+    ctx.fillText(r.name, 0, 0);
+    ctx.restore();
+
+    ctx.fillStyle = "#0f172a";
+    ctx.font = "10px sans-serif";
+    ctx.fillText(r.macro_auc.toFixed(2), x + barW/2 - 11, y - 3);
+  });
+  ctx.font = "11px sans-serif"; ctx.fillStyle = "#374151";
+  ctx.fillText("蓝色=本次训练, 橙/绿=原文基准, 误差线=95% bootstrap CI", P.left, 16);
 }
 
 // ---------- similar ----------

@@ -33,7 +33,151 @@ from data_loader import (
     CATEGORICAL_FEATURES,
     NUMERIC_FEATURES,
     SNF_LABELS,
+    TREATMENT_FEATURES,
 )
+
+# =============================================================================
+# 模型动物园(Model Zoo)
+# =============================================================================
+# 说明: 每个 builder 接受 random_state 返回一个 sklearn estimator(或兼容 API 的 xgb/lgbm)。
+# 统一放在 build_pipeline(est=...) 里, 前端直接选。
+# =============================================================================
+from sklearn.linear_model import LogisticRegression
+from sklearn.svm import SVC
+from sklearn.neighbors import KNeighborsClassifier
+from sklearn.tree import DecisionTreeClassifier
+from sklearn.ensemble import (
+    ExtraTreesClassifier,
+    GradientBoostingClassifier,
+    HistGradientBoostingClassifier,
+)
+from sklearn.naive_bayes import GaussianNB
+from sklearn.neural_network import MLPClassifier
+from sklearn.discriminant_analysis import (
+    LinearDiscriminantAnalysis,
+    QuadraticDiscriminantAnalysis,
+)
+
+
+from sklearn.base import BaseEstimator, ClassifierMixin
+from sklearn.preprocessing import LabelEncoder as _LE
+
+
+class _XGBWithLabelEncoder(BaseEstimator, ClassifierMixin):
+    """XGBoost 要求整数标签, 这里透明地做 LabelEncoder 以便接受 SNF1-4 字符串。"""
+    def __init__(self, n_estimators=500, learning_rate=0.05, max_depth=4,
+                 subsample=0.9, colsample_bytree=0.9,
+                 random_state=42):
+        self.n_estimators = n_estimators
+        self.learning_rate = learning_rate
+        self.max_depth = max_depth
+        self.subsample = subsample
+        self.colsample_bytree = colsample_bytree
+        self.random_state = random_state
+
+    def fit(self, X, y, **kw):
+        from xgboost import XGBClassifier
+        self._le = _LE()
+        y_enc = self._le.fit_transform(y)
+        self.classes_ = self._le.classes_
+        self._clf = XGBClassifier(
+            n_estimators=self.n_estimators,
+            learning_rate=self.learning_rate,
+            max_depth=self.max_depth,
+            subsample=self.subsample,
+            colsample_bytree=self.colsample_bytree,
+            objective="multi:softprob",
+            tree_method="hist",
+            random_state=self.random_state,
+            n_jobs=-1,
+            eval_metric="mlogloss",
+        )
+        self._clf.fit(X, y_enc, **kw)
+        return self
+
+    def predict_proba(self, X):
+        return self._clf.predict_proba(X)
+
+    def predict(self, X):
+        idx = self._clf.predict(X)
+        return self._le.inverse_transform(idx)
+
+    @property
+    def feature_importances_(self):
+        return self._clf.feature_importances_
+
+
+def _xgb(random_state):
+    try:
+        import xgboost  # noqa: F401
+    except Exception:
+        return None
+    return _XGBWithLabelEncoder(
+        n_estimators=500, learning_rate=0.05, max_depth=4,
+        subsample=0.9, colsample_bytree=0.9,
+        random_state=random_state,
+    )
+
+
+def _lgbm(random_state):
+    try:
+        from lightgbm import LGBMClassifier
+    except Exception:
+        return None
+    return LGBMClassifier(
+        n_estimators=500, learning_rate=0.05, num_leaves=31,
+        subsample=0.9, colsample_bytree=0.9,
+        class_weight="balanced", random_state=random_state,
+        n_jobs=-1, verbose=-1,
+    )
+
+
+MODEL_ZOO: dict = {
+    "RandomForest": lambda rs: RandomForestClassifier(
+        n_estimators=500, max_depth=None, min_samples_split=3, min_samples_leaf=1,
+        class_weight="balanced", random_state=rs, n_jobs=-1),
+    "ExtraTrees": lambda rs: ExtraTreesClassifier(
+        n_estimators=500, class_weight="balanced", random_state=rs, n_jobs=-1),
+    "GradientBoosting": lambda rs: GradientBoostingClassifier(
+        n_estimators=300, learning_rate=0.05, max_depth=3, random_state=rs),
+    "HistGradientBoosting": lambda rs: HistGradientBoostingClassifier(
+        max_iter=300, learning_rate=0.05, max_depth=None, random_state=rs),
+    "XGBoost": _xgb,
+    "LightGBM": _lgbm,
+    "LogisticRegression": lambda rs: LogisticRegression(
+        max_iter=2000, C=1.0, class_weight="balanced",
+        solver="lbfgs", random_state=rs),
+    "LogReg-L1": lambda rs: LogisticRegression(
+        max_iter=2000, C=0.5, penalty="l1", solver="saga",
+        class_weight="balanced", random_state=rs),
+    "LinearSVM": lambda rs: SVC(
+        kernel="linear", probability=True, class_weight="balanced", random_state=rs),
+    "RBF-SVM": lambda rs: SVC(
+        kernel="rbf", probability=True, class_weight="balanced", random_state=rs),
+    "KNN": lambda rs: KNeighborsClassifier(n_neighbors=11, weights="distance"),
+    "DecisionTree": lambda rs: DecisionTreeClassifier(
+        max_depth=6, class_weight="balanced", random_state=rs),
+    "GaussianNB": lambda rs: GaussianNB(),
+    "LDA": lambda rs: LinearDiscriminantAnalysis(),
+    "QDA": lambda rs: QuadraticDiscriminantAnalysis(reg_param=0.01),
+    "MLP": lambda rs: MLPClassifier(
+        hidden_layer_sizes=(64, 32), max_iter=800, random_state=rs,
+        early_stopping=False, alpha=1e-3),
+}
+
+
+def list_available_models() -> list[str]:
+    out = []
+    for name, builder in MODEL_ZOO.items():
+        est = builder(42)
+        if est is not None:
+            out.append(name)
+    return out
+
+
+def _strip_cat_for_numeric_only(categorical, X, numeric):
+    """某些模型(GaussianNB, QDA)不擅长 sparse OHE, 但我们都过同一预处理。"""
+    return categorical
 
 # =============================================================================
 # 原文基准(来自 Nature 2023 s41588-023-01507-7 正文/扩展图)
@@ -71,19 +215,31 @@ def build_preprocessor(numeric: List[str], categorical: List[str]) -> ColumnTran
 def build_pipeline(
     numeric: List[str],
     categorical: List[str],
-    n_estimators: int = 800,
+    n_estimators: int = 500,
     random_state: int = 42,
+    model_name: str = "RandomForest",
 ) -> Pipeline:
+    """
+    model_name: MODEL_ZOO 中的任一键, 默认 RandomForest。
+    n_estimators 只对 RandomForest/ExtraTrees/XGB/LGBM 生效, 其余模型会忽略。
+    """
     preproc = build_preprocessor(numeric, categorical)
-    clf = RandomForestClassifier(
-        n_estimators=n_estimators,
-        max_depth=None,
-        min_samples_split=3,
-        min_samples_leaf=1,
-        class_weight="balanced",
-        random_state=random_state,
-        n_jobs=-1,
-    )
+    builder = MODEL_ZOO.get(model_name)
+    if builder is None:
+        raise ValueError(f"未知模型 {model_name}; 可选: {list(MODEL_ZOO)}")
+    clf = builder(random_state)
+    if clf is None:
+        raise RuntimeError(f"{model_name} 未安装或不可用")
+    # 针对树/GB 类模型覆盖树数(其它模型忽略)
+    if model_name in {"RandomForest", "ExtraTrees"}:
+        try: clf.set_params(n_estimators=n_estimators)
+        except Exception: pass
+    elif model_name in {"XGBoost", "LightGBM"}:
+        try: clf.set_params(n_estimators=n_estimators)
+        except Exception: pass
+    elif model_name == "GradientBoosting":
+        try: clf.set_params(n_estimators=min(500, max(100, n_estimators // 2)))
+        except Exception: pass
     return Pipeline([("preproc", preproc), ("clf", clf)])
 
 
@@ -194,6 +350,7 @@ def cross_validate_with_ci(
     random_state: int = 42,
     n_boot: int = 500,
     n_estimators: int = 600,
+    model_name: str = "RandomForest",
 ) -> CVResult:
     y_arr = y.to_numpy()
     classes = [c for c in SNF_LABELS if (y_arr == c).sum() >= n_splits]
@@ -216,7 +373,8 @@ def cross_validate_with_ci(
     for fold, (tr, va) in enumerate(skf.split(X, y_arr), 1):
         pipe = build_pipeline(numeric, categorical,
                               n_estimators=n_estimators,
-                              random_state=random_state + fold)
+                              random_state=random_state + fold,
+                              model_name=model_name)
         pipe.fit(X.iloc[tr] if isinstance(X, pd.DataFrame) else X[tr], y_arr[tr])
         proba = pipe.predict_proba(X.iloc[va] if isinstance(X, pd.DataFrame) else X[va])
         col_order = [list(pipe.classes_).index(c) if c in pipe.classes_ else -1 for c in classes]
@@ -282,14 +440,34 @@ def predict_with_ci(
     alpha: float = 0.05,
 ) -> Dict[str, Dict[str, float]]:
     """
-    用随机森林每棵树的概率(tree-level)做 bootstrap-like 置信区间。
-    返回 {class: {"prob":, "lo":, "hi":, "std":}}
+    返回 {class: {"prob":, "lo":, "hi":, "std":, "tree_agreement":}}
+
+    - 如果是 RF/ExtraTrees 这类 bagging 模型: 用每棵树的 predict_proba 做 tree-level CI,
+      CI = mean ± 1.96 · std / sqrt(n_trees)
+    - 其他模型: 没有天然的树级别方差, 只返回 prob, CI 退化为 [prob, prob], std=0。
     """
     preproc = pipe.named_steps["preproc"]
-    clf: RandomForestClassifier = pipe.named_steps["clf"]
+    clf = pipe.named_steps["clf"]
     X_t = preproc.transform(X_new)
 
-    tree_probas = np.stack([t.predict_proba(X_t)[0] for t in clf.estimators_], axis=0)
+    estimators = getattr(clf, "estimators_", None)
+    single_proba = None
+    if estimators is None or not hasattr(estimators[0], "predict_proba"):
+        single_proba = clf.predict_proba(X_t)[0]
+        classes_fit = list(clf.classes_)
+        out = {}
+        for c in labels:
+            if c in classes_fit:
+                p = float(single_proba[classes_fit.index(c)])
+            else:
+                p = 0.0
+            out[c] = {"prob": p, "lo": p, "hi": p, "std": 0.0, "tree_agreement": float(p >= 0.5)}
+        total = sum(out[c]["prob"] for c in labels)
+        if total > 0:
+            for c in labels: out[c]["prob"] /= total
+        return out
+
+    tree_probas = np.stack([t.predict_proba(X_t)[0] for t in estimators], axis=0)
     classes_fit = list(clf.classes_)
     n_trees = tree_probas.shape[0]
 
@@ -328,6 +506,60 @@ def predict_with_ci(
 # =============================================================================
 # 相似病人(可加特征权重)
 # =============================================================================
+def compare_models(
+    X: pd.DataFrame,
+    y: pd.Series,
+    numeric: List[str],
+    categorical: List[str],
+    model_names: Optional[List[str]] = None,
+    n_splits: int = 5,
+    random_state: int = 42,
+    n_boot: int = 200,
+    n_estimators: int = 400,
+) -> List[dict]:
+    """在同一份子人群/特征上并排跑多个模型, 返回按 Macro AUC 排序的结果。
+    每个元素包含: name, macro_auc, macro_auc_ci, per_class_auc, per_class_auc_ci,
+                  fit_ok, error(若失败), n_samples。
+    """
+    import time
+    if model_names is None:
+        model_names = list_available_models()
+
+    results = []
+    for name in model_names:
+        t0 = time.time()
+        rec = {"name": name}
+        try:
+            cv = cross_validate_with_ci(
+                X, y, numeric, categorical,
+                n_splits=n_splits, random_state=random_state,
+                n_boot=n_boot, n_estimators=n_estimators,
+                model_name=name,
+            )
+            rec.update({
+                "macro_auc": cv.macro_auc,
+                "macro_auc_ci": list(cv.macro_auc_ci),
+                "per_class_auc": cv.per_class_auc,
+                "per_class_auc_ci": {k: list(v) for k, v in cv.per_class_auc_ci.items()},
+                "n_samples": cv.n_samples,
+                "labels": cv.labels,
+                "fold_macro_auc": cv.fold_macro_auc,
+                "fit_ok": True,
+                "error": None,
+            })
+        except Exception as e:
+            rec.update({"fit_ok": False, "error": str(e),
+                        "macro_auc": float("nan"),
+                        "macro_auc_ci": [float("nan"), float("nan")],
+                        "per_class_auc": {},
+                        "per_class_auc_ci": {}})
+        rec["seconds"] = round(time.time() - t0, 2)
+        results.append(rec)
+
+    results.sort(key=lambda r: (-(r["macro_auc"] if r["fit_ok"] else -1), r["name"]))
+    return results
+
+
 def compute_similarity(
     pipe: Pipeline,
     X_train: pd.DataFrame,

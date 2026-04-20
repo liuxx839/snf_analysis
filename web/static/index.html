@@ -18,8 +18,9 @@
 <nav class="tabs">
   <button class="tab active" data-tab="tab-predict">① 病人信息 / 预测</button>
   <button class="tab" data-tab="tab-train">② 训练配置 / 子人群</button>
-  <button class="tab" data-tab="tab-results">③ 模型评估 + 原文对比</button>
-  <button class="tab" data-tab="tab-similar">④ 相似病人</button>
+  <button class="tab" data-tab="tab-compare">③ 模型大比拼</button>
+  <button class="tab" data-tab="tab-results">④ 模型评估 + 原文对比</button>
+  <button class="tab" data-tab="tab-similar">⑤ 相似病人</button>
 </nav>
 
 <main>
@@ -68,16 +69,50 @@
       <h3>使用哪些特征</h3>
       <div id="feature-checkboxes" class="checkbox-grid"></div>
 
+      <h3>模型</h3>
       <div class="row">
+        <label>算法
+          <select id="train-model"></select>
+        </label>
         <label>CV 折数 <input id="n-splits" type="number" value="5" min="2" max="10" /></label>
         <label>Bootstrap 次数 <input id="n-boot" type="number" value="400" min="50" max="5000" step="50" /></label>
-        <label>树数 <input id="n-estimators" type="number" value="500" min="100" max="2000" step="100" /></label>
+        <label>树数 (仅对树/GB 模型) <input id="n-estimators" type="number" value="500" min="100" max="2000" step="100" /></label>
       </div>
 
       <div class="actions">
         <button id="btn-train" class="primary">在子人群上训练</button>
         <button id="btn-reset-filter" class="ghost">重置筛选</button>
         <span id="filter-stat" class="stat"></span>
+      </div>
+    </div>
+  </section>
+
+  <!-- ===================== Tab 3: 模型大比拼 ===================== -->
+  <section id="tab-compare" class="tab-panel">
+    <div class="card">
+      <h2>同时比较多个模型,自动选最好的</h2>
+      <p class="hint">
+        用当前勾选的特征 + 子人群条件,把 RandomForest / XGBoost / LightGBM / LogReg / SVM / LDA / KNN / MLP / … 一次性跑一遍。
+        结果按 Macro AUC 排序,勾选"自动采用最佳"会把 Tab ①④ 的预测模型换成表现最好的那个。
+      </p>
+      <div class="row">
+        <label><input type="checkbox" id="compare-auto" checked> 自动采用最佳模型用于预测</label>
+        <label>CV 折数 <input id="cmp-splits" type="number" value="5" min="2" max="10" /></label>
+        <label>Bootstrap <input id="cmp-boot" type="number" value="150" min="50" max="2000" step="50" /></label>
+        <label>树数 <input id="cmp-trees" type="number" value="300" min="50" max="1000" step="50" /></label>
+      </div>
+      <h3>参与比较的模型</h3>
+      <div id="compare-models-box" class="checkbox-grid"></div>
+      <div class="actions">
+        <button id="btn-compare" class="primary">开始比较</button>
+        <span id="compare-status" class="stat"></span>
+      </div>
+
+      <div id="compare-result" class="hidden">
+        <h3>排行榜</h3>
+        <div id="compare-table" class="table-scroll"></div>
+        <h3>AUC 柱状对比(含 95% CI)</h3>
+        <div class="canvas-wrap"><canvas id="cmp-canvas" width="760" height="420"></canvas></div>
       </div>
     </div>
   </section>
