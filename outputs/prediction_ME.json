@@ -1,0 +1,75 @@
+{
+  "patient_id": "ME",
+  "input": {
+    "Age": 45,
+    "Tumor_size_cm": 2.2,
+    "Positive_axillary_lymph_nodes": 0,
+    "ER_percent": 90,
+    "PR_percent": 80,
+    "Ki67": 20,
+    "HER2_IHC_Status": 1,
+    "Menopause": "No",
+    "Grade": 2,
+    "pT": "pT2",
+    "pN": "pN0",
+    "PR_status": "Positive",
+    "PAM50": null
+  },
+  "predicted_subtype": "SNF2",
+  "probabilities": {
+    "SNF1": 0.23467510497224953,
+    "SNF2": 0.37717281651596607,
+    "SNF3": 0.15354403134337774,
+    "SNF4": 0.23460804716840677
+  },
+  "subtype_description": "Immunogenic(免疫激活):免疫细胞浸润高,可能从免疫治疗联合中获益,预后中等偏好。",
+  "model_cv_metrics": {
+    "per_class_auc": {
+      "SNF1": 0.7939447125932426,
+      "SNF2": 0.5841410069474225,
+      "SNF3": 0.7251036589801413,
+      "SNF4": 0.656466988348829
+    },
+    "macro_auc": 0.6899140917174089,
+    "fold_macro_auc": [
+      0.730991381202305,
+      0.7360704350510542,
+      0.6257917129723497,
+      0.7239077942701737,
+      0.6592075041292947
+    ],
+    "classification_report": "              precision    recall  f1-score   support\n\n        SNF1      0.474     0.640     0.545        86\n        SNF2      0.470     0.348     0.400        89\n        SNF3      0.585     0.669     0.625       118\n        SNF4      0.559     0.328     0.413        58\n\n    accuracy                          0.524       351\n   macro avg      0.522     0.496     0.496       351\nweighted avg      0.524     0.524     0.513       351\n",
+    "confusion_matrix": [
+      [
+        55,
+        9,
+        18,
+        4
+      ],
+      [
+        26,
+        31,
+        25,
+        7
+      ],
+      [
+        18,
+        17,
+        79,
+        4
+      ],
+      [
+        17,
+        9,
+        13,
+        19
+      ]
+    ],
+    "labels": [
+      "SNF1",
+      "SNF2",
+      "SNF3",
+      "SNF4"
+    ]
+  }
+}
