@@ -50,6 +50,8 @@ from training import (  # noqa: E402
 )
 from survival import (  # noqa: E402
     SURV_ENDPOINTS,
+    VARIANTS as SURV_VARIANTS,
+    cox_four_variants,
     cox_train_test,
     predict_survival_curve,
 )
@@ -143,16 +145,19 @@ class SimilarRequest(BaseModel):
 
 class SurvivalTrainRequest(BaseModel):
     endpoints: list[str] | None = None  # 默认 ["OS","RFS","DMFS"]
-    with_treatment: bool = True
     features: list[str] | None = None
     n_splits: int = 5
     penalizer: float = 0.05
     random_state: int = 42
+    # 跑全部 4 个变体(基线 / 治疗 / SNF / SNF+治疗),这样前端能一次看到对比
+    run_variants: bool = True
 
 
 class SurvivalPredictRequest(BaseModel):
     patient: dict
-    endpoints: list[str] | None = None  # 若为空则使用已训练的所有端点
+    endpoints: list[str] | None = None     # 若为空则使用已训练的所有端点
+    variants: list[str] | None = None      # 若为空则返回全部 4 个变体的预测
+    default_variant: str = "snf+treat"     # 前端默认显示哪一个
 
 
 def _patient_to_row(patient: dict, features: list[str]) -> pd.DataFrame:
@@ -319,9 +324,12 @@ def train(req: TrainRequest):
         "model_name": req.model_name,
         "macro_auc": cv.macro_auc,
         "macro_auc_ci": list(cv.macro_auc_ci),
+        "weighted_auc": cv.weighted_auc,
+        "weighted_auc_ci": list(cv.weighted_auc_ci),
         "per_class_auc": cv.per_class_auc,
         "per_class_auc_ci": {k: list(v) for k, v in cv.per_class_auc_ci.items()},
         "fold_macro_auc": cv.fold_macro_auc,
+        "fold_weighted_auc": cv.fold_weighted_auc,
         "classification_report": cv.classification_report,
         "confusion_matrix": cv.confusion_matrix,
         "feature_importance_top15": [{"name": n, "importance": float(v)} for n, v in top],
@@ -443,6 +451,8 @@ def predict(req: PredictRequest):
         model_perf = {
             "macro_auc": cv.macro_auc,
             "macro_auc_ci": list(cv.macro_auc_ci),
+            "weighted_auc": cv.weighted_auc,
+            "weighted_auc_ci": list(cv.weighted_auc_ci),
             "per_class_auc": cv.per_class_auc,
             "per_class_auc_ci": {k: list(v) for k, v in cv.per_class_auc_ci.items()},
             "n_samples": cv.n_samples,
@@ -546,7 +556,27 @@ def similar(req: SimilarRequest):
 # ---------------------------------------------------------------------------
 # 生存预测(CoxPH)
 # ---------------------------------------------------------------------------
-_surv_state: dict = {}  # {endpoint: {"bundle":..., "result":...}}
+# _surv_state: {endpoint: {variant_key: {"bundle":..., "result":..., "meta":...}}}
+_surv_state: dict = {}
+
+
+def _variant_entry_to_dict(entry):
+    """把一个 variant 的训练产物序列化成前端能读的 dict。"""
+    if "error" in entry:
+        return {"error": entry["error"], "meta": entry["meta"]}
+    res = entry["result"]
+    return {
+        "meta": entry["meta"],
+        "n_total": res.n_total,
+        "n_events": res.n_events,
+        "n_train": res.n_train,
+        "n_test": res.n_test,
+        "cv_c_index": res.cv_c_index,
+        "cv_c_index_ci": list(res.cv_c_index_ci),
+        "train_c_index": res.train_c_index,
+        "test_c_index": res.test_c_index,
+        "top_coefficients": res.feature_coef[:8],
+    }
 
 
 @app.post("/api/survival/train")
@@ -554,23 +584,21 @@ def survival_train(req: SurvivalTrainRequest):
     endpoints = req.endpoints or list(SURV_ENDPOINTS.keys())
     out = {}
     for ep in endpoints:
-        try:
-            bundle, result = cox_train_test(
-                _feats,
-                endpoint=ep,
-                features=req.features,
-                with_treatment=req.with_treatment,
-                n_splits=req.n_splits,
-                penalizer=req.penalizer,
-                random_state=req.random_state,
-            )
-            _surv_state[ep] = {"bundle": bundle, "result": result}
-            out[ep] = result.to_dict()
-        except Exception as e:
-            out[ep] = {"error": str(e)}
+        variants = cox_four_variants(
+            _feats, endpoint=ep,
+            features=req.features,
+            n_splits=req.n_splits,
+            penalizer=req.penalizer,
+            random_state=req.random_state,
+        )
+        _surv_state[ep] = variants
+        out[ep] = {
+            "label": SURV_ENDPOINTS[ep]["label"],
+            "variants": {k: _variant_entry_to_dict(v) for k, v in variants.items()},
+        }
     return {
-        "with_treatment": req.with_treatment,
-        "features": req.features,
+        "variants_order": [v["key"] for v in SURV_VARIANTS],
+        "variants_meta": {v["key"]: v for v in SURV_VARIANTS},
         "endpoints": out,
     }
 
@@ -578,33 +606,68 @@ def survival_train(req: SurvivalTrainRequest):
 @app.post("/api/survival/predict")
 def survival_predict(req: SurvivalPredictRequest):
     if not _surv_state:
-        raise HTTPException(400, "尚未训练生存模型,请先调用 /api/survival/train。")
+        raise HTTPException(400, "尚未训练生存模型, 请先调用 /api/survival/train。")
     endpoints = req.endpoints or list(_surv_state.keys())
+    wanted_variants = req.variants or [v["key"] for v in SURV_VARIANTS]
+
+    # 如果用户没显式指定 SNF_subtype, 用 Tab ① 分型模型来预测一下,
+    # 这样 '+ SNF' 的两个变体也能给出生存曲线。
+    patient = dict(req.patient)
+    auto_snf = None
+    if not patient.get("SNF_subtype"):
+        try:
+            _default_train_if_needed()
+            pipe = _state["pipeline"]; feats = _state["features"]
+            X_new = _patient_to_row(patient, feats)
+            proba = pipe.predict_proba(X_new)[0]
+            labels = list(pipe.classes_)
+            auto_snf = labels[int(np.argmax(proba))]
+            patient["SNF_subtype"] = auto_snf
+        except Exception:
+            auto_snf = None
+
     out = {}
     for ep in endpoints:
-        rec = _surv_state.get(ep)
-        if rec is None:
+        vmap = _surv_state.get(ep)
+        if vmap is None:
             out[ep] = {"error": "该端点尚未训练"}
             continue
-        try:
-            pred = predict_survival_curve(rec["bundle"], req.patient)
-            res = rec["result"]
-            out[ep] = {
-                "label": SURV_ENDPOINTS[ep]["label"],
-                "prediction": pred,
-                "model_performance": {
-                    "n_total": res.n_total,
-                    "n_events": res.n_events,
-                    "cv_c_index": res.cv_c_index,
-                    "cv_c_index_ci": list(res.cv_c_index_ci),
-                    "train_c_index": res.train_c_index,
-                    "test_c_index": res.test_c_index,
-                },
-                "top_coefficients": res.feature_coef[:8],
-            }
-        except Exception as e:
-            out[ep] = {"error": str(e)}
-    return {"endpoints": out}
+        variant_preds = {}
+        for vk in wanted_variants:
+            entry = vmap.get(vk)
+            if entry is None or "error" in entry:
+                if entry is not None:
+                    variant_preds[vk] = {"error": entry["error"], "meta": entry["meta"]}
+                continue
+            try:
+                pred = predict_survival_curve(entry["bundle"], patient)
+                res = entry["result"]
+                variant_preds[vk] = {
+                    "meta": entry["meta"],
+                    "prediction": pred,
+                    "performance": {
+                        "cv_c_index": res.cv_c_index,
+                        "cv_c_index_ci": list(res.cv_c_index_ci),
+                        "train_c_index": res.train_c_index,
+                        "test_c_index": res.test_c_index,
+                        "n_total": res.n_total,
+                        "n_events": res.n_events,
+                    },
+                    "top_coefficients": res.feature_coef[:8],
+                }
+            except Exception as e:
+                variant_preds[vk] = {"error": str(e), "meta": entry["meta"]}
+        out[ep] = {
+            "label": SURV_ENDPOINTS[ep]["label"],
+            "variants": variant_preds,
+        }
+    return {
+        "default_variant": req.default_variant,
+        "variants_order": [v["key"] for v in SURV_VARIANTS],
+        "variants_meta": {v["key"]: v for v in SURV_VARIANTS},
+        "auto_predicted_snf": auto_snf,
+        "endpoints": out,
+    }
 
 
 @app.get("/api/survival/status")
@@ -613,6 +676,7 @@ def survival_status():
         "trained_endpoints": list(_surv_state.keys()),
         "available_endpoints": list(SURV_ENDPOINTS.keys()),
         "endpoint_labels": {k: v["label"] for k, v in SURV_ENDPOINTS.items()},
+        "variants": [v["key"] for v in SURV_VARIANTS],
     }
 
 
