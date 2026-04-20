@@ -138,23 +138,54 @@ bash run_all.sh my_patient.yaml
 
 它会按顺序做:
 
-1. **训练 + 5 折交叉验证** (`src/model.py`):产出 `outputs/snf_classifier.pkl`,以及
-   `outputs/roc_cv.png`、`outputs/confusion_matrix_cv.png`、`outputs/cv_metrics.json`、
-   `outputs/feature_importance_top20.csv`。
+1. **模型大比拼 + 自动选最佳** (`src/model.py`):跑 16 个算法(RandomForest / XGBoost / LightGBM /
+   LogisticRegression / LogReg-L1 / LinearSVM / LDA / … / MLP),按 Macro AUC 排名并自动采用冠军,
+   产出 `outputs/snf_classifier.pkl`、`outputs/model_comparison.csv/png`、`outputs/cv_metrics.json`、
+   `outputs/roc_cv.png`、`outputs/confusion_matrix_cv.png`、`outputs/feature_importance_top20.csv`。
 2. **预测你的 SNF 亚型** (`src/predict_patient.py`):产出 `outputs/prediction_ME.json`,
-   控制台直接打印每个亚型的概率以及 5 折 CV AUC。
-3. **找最相似的 Top-20 病人** (`src/find_similar.py`):产出 `outputs/similar_patients_ME.csv`。
-4. **画 KM 曲线** (`src/survival_compare.py`):
-   - `outputs/km_OS_by_SNF.png` / `km_RFS_by_SNF.png` / `km_DMFS_by_SNF.png` —— 4 个亚型在原队列里的生存曲线对比;
-   - `outputs/km_OS_similar_ME.png` 等 —— "你的相似病人 vs 全队列"的生存对比。
+   控制台直接打印每个亚型的概率 + CV AUC + 95% CI,并显示当前用的是哪个模型。
+3. **找最相似的 Top-20 病人** (`src/find_similar.py`):按特征重要性加权的欧氏距离,
+   产出 `outputs/similar_patients_ME.csv`。
+4. **画 KM 曲线** (`src/survival_compare.py`)。
+
+常见变体:
+
+```bash
+# 强制使用指定算法(跳过大比拼, 节省时间)
+bash run_all.sh my_patient.yaml --model RandomForest
+MODEL=LogReg-L1 bash run_all.sh my_patient.yaml
+
+# 把术后辅助治疗三字段也作为特征(仅限术后病人)
+bash run_all.sh my_patient.yaml --with-treatment
+WITH_TREATMENT=1 bash run_all.sh my_patient.yaml
+```
+
+和 **Web 前端完全一致**:都共享 `src/training.py`,都能做 16 模型比拼 + bootstrap 95% CI 评估。
+CLI 默认"自动选最佳",Web 前端默认 RandomForest(点击 Tab ③"模型大比拼"可以切换)。
 
 ### 3. 单独跑某一步
 
 ```bash
-python3 src/model.py                                       # 训练+评估
-python3 src/predict_patient.py --patient my_patient.yaml   # 预测
+# 只训练, 默认跑大比拼并自动选最佳
+python3 src/model.py
+
+# 看有哪些算法可选
+python3 src/model.py --list-models
+
+# 指定算法
+python3 src/model.py --model LogReg-L1
+
+# 只对比几个模型
+python3 src/model.py --compare RandomForest XGBoost LogReg-L1 LinearSVM LDA
+
+# 预测一个病人(自动加载 outputs/snf_classifier.pkl)
+python3 src/predict_patient.py --patient my_patient.yaml
+
+# 找相似病人(按特征重要性加权,是默认)
 python3 src/find_similar.py --patient my_patient.yaml --k 15
-python3 src/find_similar.py --patient my_patient.yaml --k 15 --same-subtype-only  # 只在同亚型内找
+python3 src/find_similar.py --patient my_patient.yaml --k 15 --same-subtype-only
+python3 src/find_similar.py --patient my_patient.yaml --k 15 --no-weight
+
 python3 src/survival_compare.py --patient my_patient.yaml --k 20
 ```
 
