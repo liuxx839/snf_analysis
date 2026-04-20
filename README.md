@@ -77,8 +77,10 @@ bash run_web.sh
 5. **相似病人** — 可以选择"是否按特征重要性加权欧氏距离"、"是否只在预测亚型内找"。
 
 > **注:辅助治疗三字段** (`Adjuvant_chemotherapy` / `Adjuvant_radiotherapy` / `Adjuvant_endocrine_therapy`)
-> 是"治疗端"变量,不是肿瘤本身的特性。对术前病人无法获得,并可能间接泄露医生看报告后做出的决策,
-> 所以默认**不参与训练**,表单里有特殊标记;勾选后视作术后病人的额外信息。
+> 是"治疗端"变量:手术后医生根据肿瘤风险决定的化疗/放疗/内分泌治疗。
+> **对术后病人是真实的额外信息**,所以 CLI 和前端**默认都勾选**。
+> 对术前病人,这些字段还拿不到,请在 YAML 里保持 `null`;如果完全想剔除它们,
+> CLI 用 `--no-treatment`,前端取消对应勾选后重新训练。
 
 > 训练/预测都是**会话内**的:你在 Tab ② 训练出的模型会自动用于 Tab ① 的预测和 Tab ④ 的相似度计算,
 > 重启服务会回退到默认全队列模型。
@@ -155,9 +157,10 @@ bash run_all.sh my_patient.yaml
 bash run_all.sh my_patient.yaml --model RandomForest
 MODEL=LogReg-L1 bash run_all.sh my_patient.yaml
 
-# 把术后辅助治疗三字段也作为特征(仅限术后病人)
-bash run_all.sh my_patient.yaml --with-treatment
-WITH_TREATMENT=1 bash run_all.sh my_patient.yaml
+# 默认就已经包含术后辅助治疗 3 个字段 (--with-treatment)。
+# 如果你是术前病人(还没决定治疗方案), 用 --no-treatment 剔除这几个字段:
+bash run_all.sh my_patient.yaml --no-treatment
+NO_TREATMENT=1 bash run_all.sh my_patient.yaml
 ```
 
 和 **Web 前端完全一致**:都共享 `src/training.py`,都能做 16 模型比拼 + bootstrap 95% CI 评估。

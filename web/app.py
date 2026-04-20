@@ -80,20 +80,23 @@ _state: dict = {
 }
 
 
-_DEFAULT_FEATURES = NUMERIC_FEATURES + CATEGORICAL_FEATURES  # 默认不含辅助治疗
+_DEFAULT_FEATURES = list(ALL_FEATURES)  # 默认包含全部字段(含辅助治疗三字段)
 
 
 def _default_train_if_needed():
     if _state["pipeline"] is None:
-        X, y = get_modeling_matrix(_labeled, _DEFAULT_FEATURES)
-        pipe = build_pipeline(NUMERIC_FEATURES, CATEGORICAL_FEATURES,
+        features = _DEFAULT_FEATURES
+        numeric = [c for c in features if c in NUMERIC_FEATURES]
+        categorical = [c for c in features if c not in NUMERIC_FEATURES]
+        X, y = get_modeling_matrix(_labeled, features)
+        pipe = build_pipeline(numeric, categorical,
                               n_estimators=500, random_state=42,
                               model_name="RandomForest")
         pipe.fit(X, y)
         _state["pipeline"] = pipe
-        _state["features"] = _DEFAULT_FEATURES
-        _state["numeric"] = list(NUMERIC_FEATURES)
-        _state["categorical"] = list(CATEGORICAL_FEATURES)
+        _state["features"] = features
+        _state["numeric"] = numeric
+        _state["categorical"] = categorical
         _state["model_name"] = "RandomForest"
         _state["train_df"] = _labeled.copy()
 

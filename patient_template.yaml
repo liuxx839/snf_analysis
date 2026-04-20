@@ -17,6 +17,11 @@
 #   PR_status                        : "Positive" / "Negative"
 #   PAM50                            : 如做过 PAM50 分子分型:"LumA"/"LumB"/"Her2"/"Basal"/"Normal"，无则留空
 #
+#   --- 术后辅助治疗(如果你是术后病人就填,术前/未手术请保持 null) ---
+#   Adjuvant_chemotherapy            : "Yes" / "No"   (术后有没有化疗)
+#   Adjuvant_radiotherapy            : "Yes" / "No"   (术后有没有放疗)
+#   Adjuvant_endocrine_therapy       : "Yes" / "No"   (术后吃不吃内分泌药)
+#
 # 重要:本模型只训练在 HR+/HER2- 乳腺癌(来自 Nature 2023 s41588-023-01507-7)上，
 # 使用前请确认你属于该群体(ER+ 或 PR+,HER2-)。
 # =====================================================================
@@ -38,3 +43,8 @@ pT: "pT2"
 pN: "pN0"
 PR_status: "Positive"
 PAM50: null   # 没做过 PAM50 就写 null
+
+# ---- 术后辅助治疗(术前病人请保持 null) ----
+Adjuvant_chemotherapy:     null   # "Yes" / "No"
+Adjuvant_radiotherapy:     null   # "Yes" / "No"
+Adjuvant_endocrine_therapy: null  # "Yes" / "No"
