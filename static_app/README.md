@@ -26,13 +26,16 @@ npx serve static_app -l 9876
 ## B. 部署到 GitHub Pages(推荐 · 免费 · 自动)
 
 仓库根目录已经有 `.github/workflows/deploy-static.yml`,合并到 `main` 后会自动部署。
-**第一次启用**只需在 GitHub UI 里做一次设置:
+**第一次启用**(workflow 已经会自动尝试开启 Pages,但建议在 UI 里也确认一次):
 
 1. **打开仓库** → Settings → Pages
 2. **Source** 选 **GitHub Actions**(不是 "Deploy from a branch")
-3. **保存** → 然后到 **Actions** 标签等待 "Deploy static_app to GitHub Pages" workflow 跑完(~30 秒)
+3. 保存 → 然后到 **Actions** 标签 → 选最新一次失败的 workflow → 点右上角 **Re-run all jobs**
 4. 完成后,在 `Actions` 页面顶部会看到部署的 URL,也可以在 Settings → Pages 看到。
    通常是 `https://<你的用户名>.github.io/<仓库名>/`
+
+> 如果第一次跑失败提示 `Get Pages site failed ... Not Found`,就是 Pages 还没启用过。
+> 按上面 1-3 操作开一次,**之后再 push 就完全自动**。
 
 > 例如本仓库就是 `https://liuxx839.github.io/snf_analysis/`。
 
