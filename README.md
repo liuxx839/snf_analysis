@@ -1,143 +1,129 @@
-# 基于临床特征预测 SNF 4 分型 + 相似病人比较
+# 基于临床特征预测 SNF 4 分型 + 生存预测 + 相似病人比较
 
 本仓库基于 Nature Genetics 2023 论文
 [*Multi-omic stratification of luminal HR+/HER2- breast cancer*](https://www.nature.com/articles/s41588-023-01507-7)
-公开的补充表(Table S1, N=579, 其中 351 例有 SNF1–4 标签)。
+公开的补充表(Table S1, N=579,其中 **351 例有 SNF1–4 标签**)。
 
-原文是用**数字病理 CNN** 或 **转录组随机森林**来给出 SNF1–4 亚型。
-对没有病理切片 / 转录组数据的人来说,这两条路都走不通。
+原文用**数字病理 CNN** 或**转录组随机森林**来给出 SNF1–4 亚型,对没有病理切片 / 转录组数据的人来说,这两条路都走不通。
 
 本仓库的目标是退而求其次:
-**只用医院常规病理报告里就能拿到的临床信息**(年龄、肿瘤大小、淋巴结、ER/PR%、Ki-67、分级、绝经、pT/pN、HER2 IHC、PAM50 如果做过) 训练一个分类器,
-近似预测 SNF1–4,并在原文队列里找出和你最相似的病人来对照预后。
 
-> ⚠️ 这是个**自学/科普性质**的工具,不是医疗器械,不能替代医生决策。
-> 临床特征本身比转录组弱很多,Macro AUC 只在 ~0.69 量级,**远低于**原文转录组 (~0.89) 或病理 CNN (~0.81) 的水平。
-> 仅适用于 HR+(ER+ 或 PR+) / HER2- 的乳腺癌。
+> **只用医院常规病理报告里就能拿到的临床信息**(年龄、肿瘤大小、淋巴结、ER/PR%、Ki-67、分级、绝经、pT/pN、HER2 IHC、PAM50 如果做过)
+> 训练一个分类器近似预测 SNF1–4,并在原文队列里找出和你最相似的病人来对照预后。
+
+> ⚠️ 这是个**自学/科普性质**的工具,**不是医疗器械**,不能替代医生决策。
+> 临床特征本身比转录组弱很多,Weighted AUC ≈ 0.71(原文转录组 ≈ 0.89,病理 CNN ≈ 0.81)。
+> 仅适用于 **HR+(ER+ 或 PR+) / HER2-** 的乳腺癌。
 
 ---
 
-## 一、数据
+## 一、数据与训练集
 
 仓库里有论文公开的 4 个 Excel:
 
 | 文件 | 说明 |
 |---|---|
-| `41588_2023_1507_MOESM3_ESM.xlsx` | Supplementary Tables S1-S7 (含 Table S1 临床+SNF 标签) |
+| `41588_2023_1507_MOESM3_ESM.xlsx` | **Supplementary Tables S1-S7(含 Table S1 临床 + SNF 标签,主要使用)** |
 | `41588_2023_1507_MOESM5_ESM.xlsx` | Fig 3 source data |
 | `41588_2023_1507_MOESM6_ESM.xlsx` | Fig 4 source data |
-| `41588_2023_1507_MOESM12_ESM.xlsx` | Extended Data Fig 3 (代谢-组学等) |
+| `41588_2023_1507_MOESM12_ESM.xlsx` | Extended Data Fig 3(代谢组学等) |
 
-我们只使用 `Table S1`。可用临床字段(以及缺失率)见 `python3 src/data_loader.py` 输出。
+我们只使用 `Table S1`。
 
-SNF 亚型分布(351 例):
+### 训练数据 = 351 例有 SNF 标签的病人
 
-| Subtype | N | 简称 |
-|---|---:|---|
-| SNF1 | 86  | Canonical Luminal(经典 Luminal,预后较好) |
-| SNF2 | 89  | Immunogenic(免疫激活) |
-| SNF3 | 118 | Proliferative(增殖型) |
-| SNF4 | 58  | RTK-driven(RTK 驱动,预后最差) |
+Table S1 一共 579 行,其中 **228 行没有 SNF 标签**(可能原作者没做转录组聚类)。这部分会在训练时**自动剔除** —— 因为没有"正确答案",分类器学不了。
+
+所以:
+- **SNF 分类器的训练集 = 351 例**,分布如下:
+
+  | Subtype | N | 简称 |
+  |---|---:|---|
+  | SNF1 | 86  | Canonical Luminal(经典 Luminal,预后较好) |
+  | SNF2 | 89  | Immunogenic(免疫激活型) |
+  | SNF3 | 118 | Proliferative(高增殖型) |
+  | SNF4 | 58  | RTK-driven(RTK 驱动型,预后最差) |
+
+- **不管你是 CLI、Web 前端还是静态 HTML 前端,给你做预测的都是同一个在这 351 例上训练的模型**。
+- **相似病人**也是在这 351 例有标签 cohort 里找(无标签的病人连亚型都不知道,没法做对照)。
+- **Cox 生存模型**则用更大的样本(OS 578 / RFS 575 / DMFS 566,有生存随访就行),只有包含 SNF 字段的 Cox 变体才会剔除到 ~350。详见章节六。
 
 ---
 
-## 二、纯静态版本(零后端,GitHub Pages 友好)
+## 二、纯静态前端(零后端 · GitHub Pages 友好)
 
-如果只想给非技术用户一个"打开网页填表 → 立刻看分型 + 生存曲线 + 与原文对比"的工具,
-推荐用 `static_app/`,它是**完全前端**的实现:
+**给非技术用户最推荐的版本** —— 打开网页填表,浏览器本地推理,**不上传任何数据**。
 
 ```bash
-# 一次性导出全部模型系数到 static_app/models.json
+# 1. 一次性把模型系数烤进 models.json
 python3 src/export_static_models.py
 
-# 之后只要把 static_app/ 整个目录扔到任何静态托管(GitHub Pages / Vercel / Netlify / nginx)
-# 本地预览:
+# 2. 本地预览
 cd static_app && python3 -m http.server 9876
 # 浏览器打开 http://localhost:9876
 ```
 
+**部署到 GitHub Pages / Netlify / Vercel / nginx 的详细步骤**:见 [`static_app/README.md`](static_app/README.md)。
+
+仓库已经配置好 `.github/workflows/deploy-static.yml`:合并 `main` 后自动部署,第一次只需在 **Settings → Pages → Source = GitHub Actions** 开启一下。
+
 特点:
-- **没有后端**,病人输入数据不会上传任何地方;
-- 模型系数(LogReg-L1 多分类 + 12 个 CoxPH 模型)烤进 `models.json`(~370 KB);
-- 前端用纯 JS 在浏览器里做 softmax / `S(t) = S0(t)^exp(βx)`,与后端结果**完全一致**;
-- UI 用 Chart.js 画生存曲线;3 步引导:① 填表 → ② 看 SNF 概率 → ③ 4 种 SNF 假设的个人生存曲线 → ④ 与原文 RF / CNN AUC 对比表。
-
-## 三、安装(完整版,含 FastAPI 后端)
-
-```bash
-pip install -r requirements.txt
-```
-
-只用 CPU,几秒内能跑完。
+- 渐变 hero + 3 步引导 UI(填表 → SNF 概率 → 4 种 SNF 假设的生存曲线 → 与原文对比)
+- Chart.js 画图,移动端适配
+- 前端纯 JS 复刻 sklearn/lifelines 推理:`softmax(coef·x + intercept)`、`S(t) = S₀(t)^exp(β·x)`,结果与后端**完全一致**
+- 分类器用 **13 个核心临床字段**(不含辅助治疗),和下面的 CLI/FastAPI 默认口径一致
 
 ---
 
-## 三、Web 前端(推荐)
+## 三、完整版(含 FastAPI 后端)
 
 ```bash
+pip install -r requirements.txt
 bash run_web.sh
-# 然后浏览器打开 http://localhost:8000
+# 浏览器打开 http://localhost:8000
 ```
 
-前端基于 FastAPI + 原生 HTML/JS(不依赖 Streamlit),有 6 个 Tab:
+Web 前端有 **6 个 Tab**:
 
-1. **病人信息 / 预测** — 自动从队列生成表单(数值给出中位数提示,类别给出每个取值的样本数),
-   支持"保存为默认 / 载入默认 / 载入示例";预测结果显示每个亚型的**概率 + 95% 置信区间**
-   和自动生成的中文解读。对 RF/ExtraTrees 这类 bagging 模型,CI 用"树级方差"给出;
-   其它模型退化为点估计。
-2. **训练配置 / 子人群** — 可以按任意字段过滤**训练集**(比如只用绝经、Grade 2–3、pN0–pN1、Ki67 ≥ 15% ...),
-   勾选参与训练的特征,**选择算法**(16 个之一),调整 CV 折数 / Bootstrap 次数 / 树数,
-   然后在该子人群上重新训练。
-3. **模型大比拼** — 一次性同时训练 **16 种主流算法**(RandomForest / ExtraTrees / GradientBoosting /
-   HistGradientBoosting / XGBoost / LightGBM / LogisticRegression / LogReg-L1 / LinearSVM / RBF-SVM /
-   KNN / DecisionTree / GaussianNB / LDA / QDA / MLP),按 Macro AUC 排名,还会画出每个模型的柱状图 +
-   bootstrap 95% CI 误差线,并把原文 Transcriptomics RF / Pathology CNN 作为参考线叠加。
-   可选"**自动采用最佳模型**",这样 Tab ①④ 的预测/相似病人都会换成表现最好的算法。
-4. **模型评估 + 原文对比** — 上一次训练模型的详情:Macro / Per-class AUC + bootstrap 95% CI、
-   ROC、混淆矩阵、特征重要性、完整分类报告,一张表对比原文 Transcriptomics RF 和 Pathology CNN。
-5. **相似病人** — 可以选择"是否按特征重要性加权欧氏距离"、"是否只在预测亚型内找"。
-6. **生存预测** — 为 **OS / RFS / DMFS** 各训 **4 个 Cox 变体**(2×2 = 是否含 SNF × 是否含辅助治疗):
-   - `base` 基线(只有临床)
+1. **病人信息 / 预测** — 自动从队列生成表单(数值给出中位数提示,类别给出每个取值的样本数),支持"保存为默认 / 载入示例";预测结果显示每个亚型的**概率 + 95% 置信区间**和中文解读。
+2. **训练配置 / 子人群** — 可以按任意字段过滤**训练集**(比如只用绝经、Grade 2–3、pN0–pN1、Ki67 ≥ 15%…),勾选参与训练的特征,**选择算法**,在该子人群上重新训练。
+3. **模型大比拼** — 一次性训练 **16 种算法**(RandomForest / ExtraTrees / GradientBoosting / HistGradientBoosting / XGBoost / LightGBM / LogisticRegression / LogReg-L1 / LinearSVM / RBF-SVM / KNN / DecisionTree / GaussianNB / LDA / QDA / MLP)+ 6 个 **OvR 二分类组合**,按 **Weighted AUC** 排名,bootstrap 95% CI 误差线叠加原文 RF / CNN 参考线。勾选"自动采用最佳"后 Tab ① ⑤ 会换成冠军模型。
+4. **模型评估 + 原文对比** — 当前模型详情:Weighted / Macro / Per-class AUC + bootstrap 95% CI、ROC、混淆矩阵、特征重要性、完整分类报告,与原文 Transcriptomics RF / Pathology CNN 并排。
+5. **相似病人** — 可选"按特征重要性加权欧氏距离"、"只在预测亚型内找"。
+6. **生存预测** — 为 **OS / RFS / DMFS** 各训 **4 个 Cox 变体**(2×2):
+   - `base`(临床 only)
    - `+ Adjuvant therapy`
-   - `+ SNF subtype`(用 Tab ① 模型自动预测的 SNF)
-   - `+ SNF + Adjuvant therapy`(信息最全,默认显示)
+   - `+ SNF subtype`
+   - `+ SNF + Adjuvant therapy`(默认显示)
 
-   每个组合都报告 **Train / Test / 5 折 CV C-index**(带 95% CI),并给个人生存曲线 +
-   2/5/10 年生存概率 + partial hazard ratio。可以直观看到"知道 SNF 分型或治疗史,生存预测能好多少"。
+   **两个 cohort 并排**(Full:各取最大样本;Matched:N=350 一致公平对比)。含 SNF 的 Cox 变体支持**"把病人依次假设成 SNF1/2/3/4"** 四条曲线对比 + Expected 按概率加权虚线。
 
-> **注:辅助治疗三字段** (`Adjuvant_chemotherapy` / `Adjuvant_radiotherapy` / `Adjuvant_endocrine_therapy`)
-> 是"治疗端"变量:手术后医生根据肿瘤风险决定的化疗/放疗/内分泌治疗。
-> **对术后病人是真实的额外信息**,所以 CLI 和前端**默认都勾选**。
-> 对术前病人,这些字段还拿不到,请在 YAML 里保持 `null`;如果完全想剔除它们,
-> CLI 用 `--no-treatment`,前端取消对应勾选后重新训练。
-
-> 训练/预测都是**会话内**的:你在 Tab ② 训练出的模型会自动用于 Tab ① 的预测和 Tab ④ 的相似度计算,
-> 重启服务会回退到默认全队列模型。
+> **训练/预测是会话内的**:Tab ② 训练出的模型会自动用于 Tab ① / ⑤;重启服务会回到默认全队列模型。
 
 ### API 路由
 
 | 路由 | 方法 | 说明 |
 |---|---|---|
 | `/` | GET | 主页 |
-| `/api/meta` | GET | 队列字段范围 / 类别取值分布 |
+| `/api/meta` | GET | 字段范围 / 类别分布 / 可用算法 |
 | `/api/benchmarks` | GET | 原文 Transcriptomics RF + Pathology CNN AUC |
-| `/api/train` | POST | 选特征+子人群+算法训练, 返回 AUC/CI/ROC/混淆矩阵/特征重要性 |
-| `/api/compare` | POST | 一次性比较多个模型, 返回排行榜, 可选择自动采用最佳 |
-| `/api/predict` | POST | 预测一个病人的 SNF 亚型 + 每类概率 CI |
-| `/api/similar` | POST | 找最相似 Top-K 病人 |
-| `/api/survival/train` | POST | 训练 CoxPH 模型 (OS/RFS/DMFS), 返回 train/test/CV C-index |
-| `/api/survival/predict` | POST | 用已训练模型对一个病人预测个人生存曲线 + 2/5/10 年概率 |
+| `/api/train` | POST | 选特征 + 子人群 + 算法训练 |
+| `/api/compare` | POST | 22 模型大比拼,返回排行榜,可自动采用最佳 |
+| `/api/predict` | POST | 预测一个病人 |
+| `/api/similar` | POST | 找最相似 Top-K |
+| `/api/survival/train` | POST | 训练 OS/RFS/DMFS 各 4 变体,返回 train/test/CV C-index(Full + Matched 两组 cohort) |
+| `/api/survival/predict` | POST | 个人生存曲线 + 4 种 SNF 假设曲线 + Expected |
 | `/api/survival/status` | GET | 当前已训练哪些端点 |
 
 ---
 
 ## 四、命令行使用
 
-### 1. 复制 / 编辑你自己的病人模板
+### 1. 复制 / 编辑病人模板
 
 ```bash
 cp patient_template.yaml my_patient.yaml
-# 用编辑器把里面的字段改成你自己的
+# 编辑,把所有字段改成你自己的
 ```
 
 模板字段:
@@ -152,17 +138,22 @@ Positive_axillary_lymph_nodes: 0
 ER_percent: 90
 PR_percent: 80
 Ki67: 20
-HER2_IHC_Status: 1   # HER2 IHC 评分: 0 / 1 / 2
+HER2_IHC_Status: 1   # HER2 IHC: 0 / 1 / 2(HER2- 的话一般是 0/1/2 且 FISH-)
 
 Menopause: "No"      # "Yes" / "No"
 Grade: 2             # 1 / 2 / 3
 pT: "pT2"            # "pT1" / "pT2" / "pT3"
 pN: "pN0"            # "pN0" / "pN1" / "pN2" / "pN3"
-PR_status: "Positive"  # "Positive" / "Negative"
+PR_status: "Positive"
 PAM50: null          # 没做过就保持 null
+
+# 术后辅助治疗(术前病人请保持 null)
+Adjuvant_chemotherapy: null       # "Yes" / "No"
+Adjuvant_radiotherapy: null
+Adjuvant_endocrine_therapy: null
 ```
 
-任何缺失字段写 `null` 即可,模型会自动填补(数值用中位数,类别用"Missing")。
+任何缺失字段写 `null` 即可,模型会自动填补(数值用中位数,类别用 `"Missing"`)。
 
 ### 2. 一键跑全流程
 
@@ -170,103 +161,119 @@ PAM50: null          # 没做过就保持 null
 bash run_all.sh my_patient.yaml
 ```
 
-它会按顺序做:
+依次做:
 
-1. **模型大比拼 + 自动选最佳** (`src/model.py`):跑 16 个算法(RandomForest / XGBoost / LightGBM /
-   LogisticRegression / LogReg-L1 / LinearSVM / LDA / … / MLP),按 Macro AUC 排名并自动采用冠军,
-   产出 `outputs/snf_classifier.pkl`、`outputs/model_comparison.csv/png`、`outputs/cv_metrics.json`、
-   `outputs/roc_cv.png`、`outputs/confusion_matrix_cv.png`、`outputs/feature_importance_top20.csv`。
-2. **预测你的 SNF 亚型** (`src/predict_patient.py`):产出 `outputs/prediction_ME.json`,
-   控制台直接打印每个亚型的概率 + CV AUC + 95% CI,并显示当前用的是哪个模型。
-3. **找最相似的 Top-20 病人** (`src/find_similar.py`):按特征重要性加权的欧氏距离,
-   产出 `outputs/similar_patients_ME.csv`。
-4. **画 KM 曲线** (`src/survival_compare.py`)。
-5. **CoxPH 个人生存预测** (`src/survival_predict.py`):为 OS/RFS/DMFS 分别拟合 Cox 模型,
-   报告 train/test/CV C-index,产出 `outputs/survival_report_ME.csv`、`survival_prediction_ME.json`
-   和个人生存曲线图 `survival_curve_ME.png`。默认**包含辅助治疗字段**,可以加 `--no-treatment` 关闭。
+1. **模型大比拼 + 自动选最佳**(`src/model.py`):16 + 6 OvR 个算法按 weighted AUC 排名,保存冠军到 `outputs/snf_classifier.pkl`,产出 `model_comparison.csv/png`、`cv_metrics.json`、`roc_cv.png`、`confusion_matrix_cv.png`、`feature_importance_top20.csv`。
+2. **预测 SNF 亚型**(`src/predict_patient.py`):`outputs/prediction_ME.json`,控制台打印每类概率 + 95% CI + 使用的模型名。
+3. **找 Top-20 相似病人**(`src/find_similar.py`):按特征重要性加权欧氏距离,`outputs/similar_patients_ME.csv`。
+4. **画 KM 曲线**(`src/survival_compare.py`)。
+5. **CoxPH 个人生存预测**(`src/survival_predict.py`):OS/RFS/DMFS × 4 变体 × (Full + Matched cohort),产出 `survival_report_ME.csv` / `..._matched.csv` / `survival_prediction_ME.json` / `survival_curve_ME.png` / `survival_curve_ME_bySNF.png`(4 种 SNF 假设图)。
 
-常见变体:
+### 关于辅助治疗默认值
+
+| 场景 | 辅助治疗 3 字段默认 |
+|---|---|
+| CLI `bash run_all.sh`(SNF 分型部分) | **不含** |
+| Web 前端 Tab ①②(SNF 分型) | **不含**(`Adjuvant_*` 复选框初始未勾选) |
+| 静态 HTML 前端(SNF 分型) | **不含**(烤进 `models.json` 的分类器就是 13 字段) |
+| 生存预测 `src/survival_predict.py` | **含**(术后病人治疗确实影响生存,这里保留) |
+
+**如果你是术前病人**(还没决定要不要化疗),三个字段在 YAML 里保持 `null` 即可,不会影响分型。生存预测里 Cox 模型会自动把 `Missing` 当一个类别处理。
+
+### 常见命令变体
 
 ```bash
 # 强制使用指定算法(跳过大比拼, 节省时间)
 bash run_all.sh my_patient.yaml --model RandomForest
 MODEL=LogReg-L1 bash run_all.sh my_patient.yaml
 
-# 默认就已经包含术后辅助治疗 3 个字段 (--with-treatment)。
-# 如果你是术前病人(还没决定治疗方案), 用 --no-treatment 剔除这几个字段:
-bash run_all.sh my_patient.yaml --no-treatment
-NO_TREATMENT=1 bash run_all.sh my_patient.yaml
+# 让 SNF 分型也把辅助治疗当特征(仅建议术后病人使用)
+bash run_all.sh my_patient.yaml --with-treatment
+WITH_TREATMENT=1 bash run_all.sh my_patient.yaml
 ```
-
-和 **Web 前端完全一致**:都共享 `src/training.py`,都能做 16 模型比拼 + bootstrap 95% CI 评估。
-CLI 默认"自动选最佳",Web 前端默认 RandomForest(点击 Tab ③"模型大比拼"可以切换)。
 
 ### 3. 单独跑某一步
 
 ```bash
-# 只训练, 默认跑大比拼并自动选最佳
-python3 src/model.py
-
-# 看有哪些算法可选
-python3 src/model.py --list-models
-
-# 指定算法
-python3 src/model.py --model LogReg-L1
-
-# 只对比几个模型
+python3 src/model.py                     # 只训练(默认大比拼+自动选)
+python3 src/model.py --list-models       # 看有哪些算法
+python3 src/model.py --model LogReg-L1   # 指定算法
 python3 src/model.py --compare RandomForest XGBoost LogReg-L1 LinearSVM LDA
 
-# 预测一个病人(自动加载 outputs/snf_classifier.pkl)
 python3 src/predict_patient.py --patient my_patient.yaml
 
-# 找相似病人(按特征重要性加权,是默认)
 python3 src/find_similar.py --patient my_patient.yaml --k 15
 python3 src/find_similar.py --patient my_patient.yaml --k 15 --same-subtype-only
 python3 src/find_similar.py --patient my_patient.yaml --k 15 --no-weight
 
 python3 src/survival_compare.py --patient my_patient.yaml --k 20
+python3 src/survival_predict.py --patient my_patient.yaml
 ```
 
 ---
 
 ## 五、模型说明
 
-- **算法**:`RandomForest`(800 棵, `class_weight='balanced'`)。原文 transcriptomics 模型也是随机森林。
-- **特征**:7 个数值 + 6 个类别,共 13 列,经过 `ColumnTransformer`:
-  - 数值:中位数填补 + 标准化
-  - 类别:常数填补 + One-Hot
-- **评估**:分层 5 折交叉验证, one-vs-rest AUC, 同时报告 **Weighted AUC**(按类别样本数加权, 推荐主用)和 **Macro AUC**(每类等权)。
-  类别不平衡时(SNF3 = 118, SNF4 = 58)weighted 更贴合整体实际表现。
+### SNF 分型
 
-在仓库默认数据上跑出来的指标(随机种子 42):
+- **训练集**:Table S1 里 **351 例有 SNF 标签的 HR+/HER2- 病人**(无标签的 228 例不参与训练)
+- **特征**:7 个数值 + 6 个类别 = **13 列**(不含辅助治疗)
+  - 数值:Age / Tumor_size_cm / Positive_axillary_lymph_nodes / ER_percent / PR_percent / Ki67 / HER2_IHC_Status
+  - 类别:Menopause / Grade / pT / pN / PR_status / PAM50
+- **预处理**:数值中位数填补 + z-score 标准化;类别 `Missing` 填补 + One-Hot
+- **算法**:**大比拼后自动选最佳**。在这份数据上通常是 **LogReg-L1** 或 LinearSVM/LDA 夺冠(低维小样本 + 线性信号主导),RandomForest 排第 5 左右。
+- **评估**:5 折 Stratified CV + **bootstrap 95% CI**,同时报告 **Weighted AUC**(推荐主用,按类别样本数加权)和 Macro AUC。
 
-| Subtype | CV AUC (临床特征模型) | 原文 transcriptomics RF | 原文 pathology CNN |
+当前默认数据上的表现(seed=42):
+
+| Subtype | 本工具 CV AUC | 原文 Transcriptomics RF | 原文 Pathology CNN |
 |---|---:|---:|---:|
-| SNF1 | ~0.79 | 0.95 | 0.87 |
-| SNF2 | ~0.58 | 0.93 | 0.81 |
-| SNF3 | ~0.73 | 0.85 | 0.78 |
-| SNF4 | ~0.66 | 0.82 | 0.78 |
-| Macro | **~0.69** | 0.89 | 0.81 |
+| SNF1 | 0.78 | 0.95 | 0.87 |
+| SNF2 | 0.62 | 0.93 | 0.81 |
+| SNF3 | 0.75 | 0.85 | 0.78 |
+| SNF4 | 0.68 | 0.82 | 0.78 |
+| **Weighted** | **~0.71** | 0.89 | 0.81 |
 
-**结论**:只靠临床信息,SNF1(经典 Luminal)最容易识别,SNF2(免疫亚型)最难,
-因为 SNF2 的判别信号主要在免疫细胞浸润 / 转录组里,临床无对应字段。
-这个模型适合作为"我大概率不是某些亚型"的过滤器,**不要把它当作确诊工具**。
+**结论**:只靠临床信息,SNF1(经典 Luminal)最容易识别,SNF2(免疫型)最难 —— 因为 SNF2 的判别信号主要在免疫细胞浸润 / 转录组里,临床无对应字段。**这个模型适合做"我大概率不是某些亚型"的筛查,不要当确诊工具。**
+
+### 相似病人
+
+1. 把你和队列里 351 个病人一起过**训练时的预处理管道**,得到约 30 维的特征空间
+2. 默认**按 RandomForest/L1 LR 的特征重要性加权**,让判别力强的维度(年龄 / Ki67 / PR% / PAM50)主导距离
+3. 欧氏距离升序取 Top-K
+4. 可选 `--same-subtype-only` / `--no-weight`
+
+注意:**相似 ≠ 同亚型**,Top-K 里混着其他亚型是正常的。
 
 ---
 
-## 六、相似病人
+## 六、生存预测(CoxPH)
 
-**相似度的定义**:
-1. 把你和队列里每个病人的临床特征一起走**训练时的预处理管道**
-   (数值 → 中位数填补 + z-score 标准化;类别 → 缺失填 `Missing` + One-Hot),
-   得到同一个约 30 维特征空间。
-2. 默认计算**欧氏距离** `d = ||x_me − x_patient||₂`,按 `d` 升序取 Top-K。
-3. Web 前端 / API 支持"**按特征重要性加权**":把每维按 RandomForest 训练出的
-   `feature_importances_` 归一后,乘进距离里,让更能判别 SNF 的维度说了算
-   (比如年龄 / Ki67 / PR% / PAM50 权重大,肿瘤大小权重小)。
-4. 也支持"只在预测出的同亚型内找"(`--same-subtype-only` / 前端勾选框)。
+对 OS / RFS / DMFS 三个端点,分别训练 **4 种 Cox 变体**:
 
-注意:相似 ≠ 同亚型。只按临床相似,返回的 Top-K 里仍可能混着其他亚型,这是正常的。
+| 变体 | 含 SNF? | 含辅助治疗? |
+|---|:---:|:---:|
+| `base` | ✗ | ✗ |
+| `treat` | ✗ | ✓ |
+| `snf` | ✓ | ✗ |
+| `snf+treat`(默认) | ✓ | ✓ |
+
+每个变体同时在两个 cohort 上训练:
+
+| Cohort | N | 用途 |
+|---|---:|---|
+| **Full** | ~578(base/treat)/ ~350(含 SNF) | 各取最大样本,反映最佳性能 |
+| **Matched** | **~350(所有 4 变体一致)** | 公平对比:加 SNF/治疗到底提升多少 |
+
+实测在 Matched cohort 上(同一 350 例):
+
+| Endpoint | base | + treat | + snf | + snf+treat |
+|---|---:|---:|---:|---:|
+| OS CV C-index | 0.730 | 0.724 | **0.743** | 0.735 |
+| RFS | 0.724 | 0.729 | 0.727 | **0.731** |
+| DMFS | 0.736 | 0.742 | 0.749 | **0.752** |
+
+对个人:**同一病人在 4 种 SNF 假设下 10 年生存概率可以差 20–25 个百分点** —— 即使群体 C-index 只涨 0.01。两者不矛盾,前端 Tab ⑥ 有详细 explainer。
 
 ---
 
@@ -274,26 +281,31 @@ python3 src/survival_compare.py --patient my_patient.yaml --k 20
 
 ```
 .
-├── 41588_2023_1507_MOESM3_ESM.xlsx     # Table S1 (主要使用)
-├── 41588_2023_1507_MOESM5_ESM.xlsx
-├── 41588_2023_1507_MOESM6_ESM.xlsx
-├── 41588_2023_1507_MOESM12_ESM.xlsx
-├── patient_template.yaml               # 病人信息模板
+├── 41588_2023_1507_MOESM*.xlsx     # 原文 4 个 Excel
+├── patient_template.yaml           # 病人信息模板
 ├── requirements.txt
-├── run_all.sh                          # CLI 一键脚本
-├── run_web.sh                          # 启动 Web 前端
-├── README.md
+├── run_all.sh                      # CLI 一键脚本
+├── run_web.sh                      # 启动 FastAPI + 原生 HTML 前端
+├── README.md                       # 本文件
 ├── src/
-│   ├── data_loader.py                  # 读 Table S1 + 类型清洗
-│   ├── training.py                     # 可复用训练/评估(子人群 + bootstrap CI + 森林 CI)
-│   ├── model.py                        # CLI: 训练 + 5 折 CV + 保存模型
-│   ├── predict_patient.py              # CLI: 预测一个病人
-│   ├── find_similar.py                 # CLI: 找最相似 Top-K
-│   └── survival_compare.py             # CLI: KM 生存曲线
+│   ├── data_loader.py              # 读 Table S1 + 清洗
+│   ├── training.py                 # 训练 + 22 算法 + 子人群 + bootstrap CI
+│   ├── survival.py                 # CoxPH + 4 变体 + 4 SNF 假设 + Matched cohort
+│   ├── model.py                    # CLI: 大比拼 + 自动选最佳
+│   ├── predict_patient.py          # CLI: 预测一人
+│   ├── find_similar.py             # CLI: 相似病人
+│   ├── survival_compare.py         # CLI: KM 曲线
+│   ├── survival_predict.py         # CLI: CoxPH 个人生存
+│   └── export_static_models.py     # 导出系数到 static_app/models.json
 ├── web/
-│   ├── app.py                          # FastAPI 后端
-│   └── static/                         # 原生 HTML/CSS/JS 前端
-└── outputs/                            # CLI 产物
+│   ├── app.py                      # FastAPI 后端
+│   └── static/                     # 原生 HTML/CSS/JS 前端(6 Tab)
+├── static_app/
+│   ├── index.html, style.css, app.js   # 零后端静态前端
+│   ├── models.json                 # 烤好的模型系数(~370 KB)
+│   └── README.md                   # 部署指南
+├── .github/workflows/deploy-static.yml   # GH Pages 自动部署
+└── outputs/                        # CLI 产物
 ```
 
 ---
@@ -302,6 +314,5 @@ python3 src/survival_compare.py --patient my_patient.yaml --k 20
 
 如果用到了原数据,请引用:
 
-> Gong Y, Ji P, Yang YS, et al. *Multi-omic stratification of HR+/HER2- breast cancer reveals
-> integrative subtypes with prognostic and therapeutic relevance.* **Nature Genetics** 55, 1716–1730 (2023).
-> https://doi.org/10.1038/s41588-023-01507-7
+> Gong Y, Ji P, Yang YS, et al. *Multi-omic stratification of HR+/HER2- breast cancer reveals integrative subtypes with prognostic and therapeutic relevance.*
+> **Nature Genetics** 55, 1716–1730 (2023). https://doi.org/10.1038/s41588-023-01507-7
