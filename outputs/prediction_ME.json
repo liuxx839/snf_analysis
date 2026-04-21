@@ -1,31 +1,31 @@
 {
   "patient_id": "ME",
   "input": {
-    "Age": 45,
-    "Tumor_size_cm": 2.2,
+    "Age": 33,
+    "Tumor_size_cm": 0.9,
     "Positive_axillary_lymph_nodes": 0,
     "ER_percent": 90,
-    "PR_percent": 80,
-    "Ki67": 20,
-    "HER2_IHC_Status": 1,
+    "PR_percent": 90,
+    "Ki67": 25,
+    "HER2_IHC_Status": 0,
     "Menopause": "No",
     "Grade": 2,
-    "pT": "pT2",
+    "pT": "pT1",
     "pN": "pN0",
     "PR_status": "Positive",
-    "PAM50": null,
-    "Adjuvant_chemotherapy": null,
-    "Adjuvant_radiotherapy": null,
-    "Adjuvant_endocrine_therapy": null
+    "PAM50": "LumB",
+    "Adjuvant_chemotherapy": "Yes",
+    "Adjuvant_radiotherapy": "Yes",
+    "Adjuvant_endocrine_therapy": "Yes"
   },
-  "predicted_subtype": "SNF2",
+  "predicted_subtype": "SNF3",
   "probabilities": {
-    "SNF1": 0.2654109634491268,
-    "SNF2": 0.3117085043868734,
-    "SNF3": 0.17268298145002867,
-    "SNF4": 0.25019755071397104
+    "SNF1": 0.1772206768497971,
+    "SNF2": 0.3092308156189138,
+    "SNF3": 0.33980505155145085,
+    "SNF4": 0.1737434559798383
   },
-  "subtype_description": "Immunogenic(免疫激活):免疫细胞浸润高,可能从免疫治疗联合中获益,预后中等偏好。",
+  "subtype_description": "Proliferative(增殖型):增殖通路活跃、Ki67 偏高、CDK4/6 通路相关,常需更强化疗或 CDK4/6 抑制剂。",
   "model_cv_metrics": {
     "per_class_auc": {
       "SNF1": 0.7810881965774463,
