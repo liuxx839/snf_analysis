@@ -1,50 +1,29 @@
 # =====================================================================
-# 病人信息模板
+# 病人信息(用户当前 case)
 # =====================================================================
-# 填写自己的情况，未知项保留为 null 或删除该行；模型会自动填补。
-#
-# 字段说明:
-#   Age                              : 年龄(岁)
-#   Tumor_size_cm                    : 肿瘤最大径(cm)
-#   Positive_axillary_lymph_nodes    : 阳性腋窝淋巴结数
-#   ER_percent / PR_percent          : ER/PR 免疫组化阳性比例(0-100)
-#   Ki67                             : Ki-67 %(0-100)
-#   HER2_IHC_Status                  : HER2 IHC 评分 0/1/2/3 (HER2- 的话一般是 0/1/2 且 FISH-)
-#   Menopause                        : "Yes" / "No"
-#   Grade                            : 1 / 2 / 3
-#   pT                               : "pT1" / "pT2" / "pT3"
-#   pN                               : "pN0" / "pN1" / "pN2" / "pN3"
-#   PR_status                        : "Positive" / "Negative"
-#   PAM50                            : 如做过 PAM50 分子分型:"LumA"/"LumB"/"Her2"/"Basal"/"Normal"，无则留空
-#
-#   --- 术后辅助治疗(如果你是术后病人就填,术前/未手术请保持 null) ---
-#   Adjuvant_chemotherapy            : "Yes" / "No"   (术后有没有化疗)
-#   Adjuvant_radiotherapy            : "Yes" / "No"   (术后有没有放疗)
-#   Adjuvant_endocrine_therapy       : "Yes" / "No"   (术后吃不吃内分泌药)
-#
-# 重要:本模型只训练在 HR+/HER2- 乳腺癌(来自 Nature 2023 s41588-023-01507-7)上，
-# 使用前请确认你属于该群体(ER+ 或 PR+,HER2-)。
+# 数字病理 CNN 已给出的 SNF 亚型:SNF4(下面字段由用户提供)。
+# 本工具只用临床字段做参考预测,与 CNN 互为对照。
 # =====================================================================
 
 patient_id: "ME"
 
-Age: 45
-Tumor_size_cm: 2.2
+Age: 33
+Tumor_size_cm: 0.9
 Positive_axillary_lymph_nodes: 0
 
 ER_percent: 90
-PR_percent: 80
-Ki67: 20
-HER2_IHC_Status: 1
+PR_percent: 90
+Ki67: 25
+HER2_IHC_Status: 0
 
 Menopause: "No"
 Grade: 2
-pT: "pT2"
+pT: "pT1"
 pN: "pN0"
 PR_status: "Positive"
-PAM50: null   # 没做过 PAM50 就写 null
+PAM50: "LumB"
 
-# ---- 术后辅助治疗(术前病人请保持 null) ----
-Adjuvant_chemotherapy:     null   # "Yes" / "No"
-Adjuvant_radiotherapy:     null   # "Yes" / "No"
-Adjuvant_endocrine_therapy: null  # "Yes" / "No"
+# ---- 术后辅助治疗 ----
+Adjuvant_chemotherapy:      "Yes"
+Adjuvant_radiotherapy:      "Yes"
+Adjuvant_endocrine_therapy: "Yes"
