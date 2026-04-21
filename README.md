@@ -41,7 +41,28 @@ SNF 亚型分布(351 例):
 
 ---
 
-## 二、安装
+## 二、纯静态版本(零后端,GitHub Pages 友好)
+
+如果只想给非技术用户一个"打开网页填表 → 立刻看分型 + 生存曲线 + 与原文对比"的工具,
+推荐用 `static_app/`,它是**完全前端**的实现:
+
+```bash
+# 一次性导出全部模型系数到 static_app/models.json
+python3 src/export_static_models.py
+
+# 之后只要把 static_app/ 整个目录扔到任何静态托管(GitHub Pages / Vercel / Netlify / nginx)
+# 本地预览:
+cd static_app && python3 -m http.server 9876
+# 浏览器打开 http://localhost:9876
+```
+
+特点:
+- **没有后端**,病人输入数据不会上传任何地方;
+- 模型系数(LogReg-L1 多分类 + 12 个 CoxPH 模型)烤进 `models.json`(~370 KB);
+- 前端用纯 JS 在浏览器里做 softmax / `S(t) = S0(t)^exp(βx)`,与后端结果**完全一致**;
+- UI 用 Chart.js 画生存曲线;3 步引导:① 填表 → ② 看 SNF 概率 → ③ 4 种 SNF 假设的个人生存曲线 → ④ 与原文 RF / CNN AUC 对比表。
+
+## 三、安装(完整版,含 FastAPI 后端)
 
 ```bash
 pip install -r requirements.txt

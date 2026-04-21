@@ -1,0 +1,163 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>HR+/HER2- 乳腺癌 · 个人 SNF 分型与生存预测</title>
+<link rel="stylesheet" href="style.css" />
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"></script>
+</head>
+<body>
+
+<header class="hero">
+  <div class="hero-inner">
+    <div class="hero-badge">基于 Nature Genetics 2023</div>
+    <h1>HR+/HER2- 乳腺癌<br/><span>个人分子分型 + 生存预测</span></h1>
+    <p class="hero-sub">
+      只需填写常规病理报告里的几个数字 —— 年龄、肿瘤大小、Ki67、ER%、PR% 等 ——
+      就能立刻得到你的 4 种分子分型(SNF1–4)概率,并把你"假设成不同亚型"时的 10 年生存预测
+      并排显示出来。
+    </p>
+    <p class="hero-disclaimer">
+      ⚠️ 这是一个学习/科普工具,<b>不是医疗器械</b>,不能替代医生判断。
+      仅适用于 ER+ 或 PR+ / HER2- 的乳腺癌患者。
+    </p>
+  </div>
+</header>
+
+<main class="container">
+
+  <!-- ========== STEP 1: input ========== -->
+  <section class="card step">
+    <div class="step-header">
+      <div class="step-num">1</div>
+      <div>
+        <h2>填写你的临床信息</h2>
+        <p class="step-sub">不知道的项目留空,系统会自动用人群中位数填补 —— 但填得越准,预测越准。</p>
+      </div>
+    </div>
+
+    <form id="patient-form" class="form-grid"></form>
+
+    <div class="step-actions">
+      <button id="btn-predict" class="btn btn-primary">看我的分型 + 生存预测 →</button>
+      <button id="btn-example" class="btn btn-ghost">载入示例</button>
+      <button id="btn-clear" class="btn btn-ghost">清空</button>
+    </div>
+  </section>
+
+  <!-- ========== STEP 2: SNF prediction ========== -->
+  <section id="result-snf" class="card step hidden">
+    <div class="step-header">
+      <div class="step-num">2</div>
+      <div>
+        <h2>你的 SNF 分子分型</h2>
+        <p class="step-sub">4 种亚型的概率(总和 = 100%)。颜色越深越可能。</p>
+      </div>
+    </div>
+
+    <div id="snf-bars" class="snf-bars"></div>
+
+    <div id="snf-most-likely" class="snf-callout"></div>
+
+    <details class="explainer">
+      <summary>这 4 种分型分别是什么? <span class="hint-pill">点开看科普</span></summary>
+      <div id="snf-descriptions" class="snf-desc-grid"></div>
+    </details>
+
+    <details class="explainer">
+      <summary>这些预测准吗? <span class="hint-pill">看模型表现</span></summary>
+      <div id="model-perf"></div>
+    </details>
+  </section>
+
+  <!-- ========== STEP 3: survival -->
+  <section id="result-surv" class="card step hidden">
+    <div class="step-header">
+      <div class="step-num">3</div>
+      <div>
+        <h2>个人生存曲线 · 4 种亚型假设对比</h2>
+        <p class="step-sub">
+          如果你属于 SNF1, 5 年/10 年生存率会是多少?如果是 SNF4 呢?把"自己依次假设成 4 种亚型"
+          各跑一遍模型,曲线分得越开,亚型对预后的影响就越大。
+        </p>
+      </div>
+    </div>
+
+    <div class="surv-controls">
+      <label class="control">
+        <span>预测哪种生存指标</span>
+        <select id="surv-endpoint">
+          <option value="OS">OS · 总生存(死亡)</option>
+          <option value="RFS">RFS · 无复发生存(局部 + 远处复发)</option>
+          <option value="DMFS" selected>DMFS · 无远处转移生存(发生远处转移)</option>
+        </select>
+      </label>
+      <label class="control">
+        <span>是否含术后辅助治疗</span>
+        <select id="surv-with-treat">
+          <option value="snf+treat" selected>含 SNF + 含治疗</option>
+          <option value="snf">含 SNF, 不含治疗</option>
+          <option value="treat">不含 SNF, 含治疗</option>
+          <option value="base">都不含 (baseline)</option>
+        </select>
+      </label>
+    </div>
+
+    <div class="canvas-wrap">
+      <canvas id="surv-chart" height="240"></canvas>
+    </div>
+
+    <div id="surv-summary" class="milestones"></div>
+
+    <details class="explainer">
+      <summary>怎么理解 "C-index" 与"为什么 SNF1 vs SNF4 个人差很大但 C-index 只涨一点"?
+        <span class="hint-pill">非常推荐看</span>
+      </summary>
+      <div class="prose">
+        <p>
+          <b>C-index</b>(一致性指数)≈ AUC,衡量模型对**群体**风险排序的能力。
+          0.5 = 随机,1.0 = 完美。临床特征 + SNF 在 OS / RFS / DMFS 上能做到 0.72–0.81,已经相当不错。
+        </p>
+        <p>
+          但你看到的 "SNF1 vs SNF4 个人 10 年差 25 个百分点"是<b>个体</b>层面的差距。
+          C-index 测的是<b>群体</b>整体排序,涨 0.01 的意思是 "整个 350 人里多排对了几对"。
+          这两个数字测的是不同东西,不矛盾。
+        </p>
+        <p>
+          直观地说:Ki67 高 + 淋巴结多的病人,模型从临床特征就能看出"高危",再告诉它 SNF 也涨不了多少;
+          而对临床特征比较中庸的病人(可能就是你),亚型才会决定预测往左还是往右,差距很大。
+        </p>
+      </div>
+    </details>
+  </section>
+
+  <!-- ========== STEP 4: comparison ========== -->
+  <section id="result-bench" class="card step hidden">
+    <div class="step-header">
+      <div class="step-num">4</div>
+      <div>
+        <h2>这个工具 vs 原文模型</h2>
+        <p class="step-sub">
+          原文用的是<b>转录组测序</b>或<b>数字病理切片 + CNN</b>,我们这里只用病理报告里的几个数字。
+          差距是预期内的 —— 但相比"完全不预测",已经能给出有用的方向。
+        </p>
+      </div>
+    </div>
+    <div id="bench-table"></div>
+  </section>
+
+</main>
+
+<footer>
+  <p>
+    数据来自 <a target="_blank" href="https://www.nature.com/articles/s41588-023-01507-7">
+      Nature Genetics 2023, Gong et al.</a>
+    · 完全本地推理(模型系数已在浏览器里),不会上传你的数据 ·
+    <a target="_blank" href="https://github.com/liuxx839/snf_analysis">源代码</a>
+  </p>
+</footer>
+
+<script src="app.js"></script>
+</body>
+</html>
