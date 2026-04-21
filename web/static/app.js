@@ -351,14 +351,24 @@ async function renderTrainResult(r) {
   const filtStr = Object.keys(r.filters_applied||{}).length ? JSON.stringify(r.filters_applied) : "(全队列)";
   const wauc = r.weighted_auc ?? r.macro_auc;
   const wci = r.weighted_auc_ci ?? r.macro_auc_ci;
+  const foldW = r.fold_weighted_auc || [];
+  const foldM = r.fold_macro_auc || [];
+  const _mean = a => a.length ? (a.reduce((s,v)=>s+v,0)/a.length) : NaN;
   document.getElementById("cv-summary").innerHTML = `
     <p>算法: <b>${r.model_name || "RandomForest"}</b> &nbsp;·&nbsp; 训练样本 N = <b>${r.n_samples}</b> (${classCounts})</p>
     <p>子人群条件: <code>${escapeHTML(filtStr)}</code></p>
     <p>使用特征: <code>${r.features_used.join(", ")}</code></p>
-    <p><b>Weighted AUC</b> = <b>${wauc.toFixed(3)}</b>
+    <p><b>Weighted AUC</b>(pooled OOF) = <b>${wauc.toFixed(3)}</b>
        95% CI [${wci[0].toFixed(3)}, ${wci[1].toFixed(3)}]
-       &nbsp;·&nbsp; Macro AUC = ${r.macro_auc.toFixed(3)}
-       &nbsp;·&nbsp; 逐折 macro: ${r.fold_macro_auc.map(v=>v.toFixed(3)).join(", ")}</p>
+       &nbsp;·&nbsp; Macro AUC = ${r.macro_auc.toFixed(3)}</p>
+    <p class="hint">
+      <b>逐折 5 个 AUC</b>(每折单独计算,仅作参考):<br>
+      weighted = ${foldW.map(v=>v.toFixed(3)).join(", ") || "n/a"}
+      ${foldW.length ? `(mean = ${_mean(foldW).toFixed(3)})` : ""}<br>
+      macro = ${foldM.map(v=>v.toFixed(3)).join(", ")}
+      ${foldM.length ? `(mean = ${_mean(foldM).toFixed(3)})` : ""}<br>
+      上面 <b>Weighted AUC = ${wauc.toFixed(3)}</b> 不是这 5 折的简单平均,而是把 5 折全部 out-of-fold 预测拼起来一次性算的(pooled OOF),数值更稳。
+    </p>
   `;
 
   const benchBox = document.getElementById("bench-table");
